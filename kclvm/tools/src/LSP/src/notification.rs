@@ -97,10 +97,11 @@ impl LanguageServerState {
         vfs.set_file_contents(path.into(), Some(text.clone().into_bytes()));
 
         // update word index
-        let old_word_index = build_word_index_for_file_content(old_text, &text_document.uri);
-        let new_word_index = build_word_index_for_file_content(text.clone(), &text_document.uri);
-        let binding = text_document.uri.path();
-        let file_path = Path::new(binding); //todo rename
+        let old_word_index = build_word_index_for_file_content(old_text, &text_document.uri, true);
+        let new_word_index =
+            build_word_index_for_file_content(text.clone(), &text_document.uri, true);
+        let binding = from_lsp::file_path_from_url(&text_document.uri)?;
+        let file_path = Path::new(&binding); //todo rename
         let word_index_map = &mut *self.word_index_map.write();
         for (key, value) in word_index_map {
             let workspace_folder_path = Path::new(key.path());

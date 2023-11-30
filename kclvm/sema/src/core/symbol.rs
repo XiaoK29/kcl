@@ -25,7 +25,7 @@ pub trait Symbol {
         data: &Self::SymbolData,
         module_info: Option<&ModuleInfo>,
     ) -> Option<SymbolRef>;
-    fn has_attribue(
+    fn has_attribute(
         &self,
         name: &str,
         data: &Self::SymbolData,
@@ -43,7 +43,7 @@ pub trait Symbol {
     fn full_dump(&self, data: &Self::SymbolData) -> Option<String>;
 }
 
-type KCLSymbol = dyn Symbol<SymbolData = KCLSymbolData, SemanticInfo = KCLSymbolSemanticInfo>;
+pub type KCLSymbol = dyn Symbol<SymbolData = KCLSymbolData, SemanticInfo = KCLSymbolSemanticInfo>;
 #[derive(Debug, Clone, Default)]
 pub struct KCLSymbolSemanticInfo {
     pub ty: Option<Arc<Type>>,
@@ -71,7 +71,7 @@ pub struct SymbolDB {
     pub(crate) fully_qualified_name_map: IndexMap<String, SymbolRef>,
     pub(crate) schema_builtin_symbols: IndexMap<SymbolRef, IndexMap<String, SymbolRef>>,
     pub(crate) ast_id_map: IndexMap<AstIndex, SymbolRef>,
-    pub(crate) symbol_ty_map: IndexMap<SymbolRef, Arc<Type>>,
+    pub(crate) symbol_ref_map: IndexMap<SymbolRef, AstIndex>,
 }
 
 impl KCLSymbolData {
@@ -319,11 +319,6 @@ impl KCLSymbolData {
         }
     }
 
-    pub fn add_symbol_info(&mut self, symbol: SymbolRef, ty: Arc<Type>, ast_id: AstIndex) {
-        self.symbols_info.ast_id_map.insert(ast_id, symbol);
-        self.symbols_info.symbol_ty_map.insert(symbol, ty);
-    }
-
     pub fn get_symbol_by_ast_index(&self, id: &AstIndex) -> Option<SymbolRef> {
         self.symbols_info.ast_id_map.get(id).cloned()
     }
@@ -434,6 +429,9 @@ impl KCLSymbolData {
         self.symbols_info
             .ast_id_map
             .insert(ast_id.clone(), symbol_ref);
+        self.symbols_info
+            .symbol_ref_map
+            .insert(symbol_ref, ast_id.clone());
         self.schemas.get_mut(symbol_id).unwrap().id = Some(symbol_ref);
         symbol_ref
     }
@@ -451,6 +449,9 @@ impl KCLSymbolData {
         self.symbols_info
             .ast_id_map
             .insert(ast_id.clone(), symbol_ref);
+        self.symbols_info
+            .symbol_ref_map
+            .insert(symbol_ref, ast_id.clone());
         self.unresolved.get_mut(symbol_id).unwrap().id = Some(symbol_ref);
         symbol_ref
     }
@@ -468,6 +469,9 @@ impl KCLSymbolData {
         self.symbols_info
             .ast_id_map
             .insert(ast_id.clone(), symbol_ref);
+        self.symbols_info
+            .symbol_ref_map
+            .insert(symbol_ref, ast_id.clone());
         self.type_aliases.get_mut(symbol_id).unwrap().id = Some(symbol_ref);
         symbol_ref
     }
@@ -481,6 +485,9 @@ impl KCLSymbolData {
         self.symbols_info
             .ast_id_map
             .insert(ast_id.clone(), symbol_ref);
+        self.symbols_info
+            .symbol_ref_map
+            .insert(symbol_ref, ast_id.clone());
         self.rules.get_mut(symbol_id).unwrap().id = Some(symbol_ref);
         symbol_ref
     }
@@ -498,6 +505,9 @@ impl KCLSymbolData {
         self.symbols_info
             .ast_id_map
             .insert(ast_id.clone(), symbol_ref);
+        self.symbols_info
+            .symbol_ref_map
+            .insert(symbol_ref, ast_id.clone());
         self.attributes.get_mut(symbol_id).unwrap().id = Some(symbol_ref);
         symbol_ref
     }
@@ -511,6 +521,9 @@ impl KCLSymbolData {
         self.symbols_info
             .ast_id_map
             .insert(ast_id.clone(), symbol_ref);
+        self.symbols_info
+            .symbol_ref_map
+            .insert(symbol_ref, ast_id.clone());
         self.values.get_mut(symbol_id).unwrap().id = Some(symbol_ref);
         symbol_ref
     }
@@ -654,7 +667,7 @@ impl Symbol for SchemaSymbol {
         result
     }
 
-    fn has_attribue(
+    fn has_attribute(
         &self,
         name: &str,
         data: &Self::SymbolData,
@@ -808,7 +821,7 @@ impl Symbol for ValueSymbol {
         result
     }
 
-    fn has_attribue(
+    fn has_attribute(
         &self,
         name: &str,
         data: &Self::SymbolData,
@@ -940,7 +953,7 @@ impl Symbol for AttributeSymbol {
         result
     }
 
-    fn has_attribue(
+    fn has_attribute(
         &self,
         name: &str,
         data: &Self::SymbolData,
@@ -1054,7 +1067,7 @@ impl Symbol for PackageSymbol {
         result
     }
 
-    fn has_attribue(
+    fn has_attribute(
         &self,
         name: &str,
         _data: &Self::SymbolData,
@@ -1179,7 +1192,7 @@ impl Symbol for TypeAliasSymbol {
         result
     }
 
-    fn has_attribue(
+    fn has_attribute(
         &self,
         name: &str,
         data: &Self::SymbolData,
@@ -1294,7 +1307,7 @@ impl Symbol for RuleSymbol {
         vec![]
     }
 
-    fn has_attribue(
+    fn has_attribute(
         &self,
         _name: &str,
         _data: &Self::SymbolData,
@@ -1427,7 +1440,7 @@ impl Symbol for UnresolvedSymbol {
         vec![]
     }
 
-    fn has_attribue(
+    fn has_attribute(
         &self,
         name: &str,
         data: &Self::SymbolData,

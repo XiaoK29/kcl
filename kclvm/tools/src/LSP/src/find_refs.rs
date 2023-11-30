@@ -1,12 +1,13 @@
-use crate::from_lsp::kcl_pos;
+use crate::from_lsp::{file_path_from_url, kcl_pos};
 use crate::goto_def::{find_def_with_gs, goto_definition_with_gs};
 use crate::to_lsp::lsp_location;
 use crate::util::{parse_param_and_compile, Param};
-use anyhow;
+
+use anyhow::Result;
 use kclvm_ast::ast::Program;
 use kclvm_error::Position as KCLPos;
+use kclvm_parser::KCLModuleCache;
 use kclvm_sema::core::global_state::GlobalState;
-use kclvm_sema::resolver::scope::ProgramScope;
 use lsp_types::{Location, Url};
 use parking_lot::RwLock;
 use ra_ap_vfs::Vfs;
@@ -14,16 +15,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub(crate) fn find_refs<F: Fn(String) -> Result<(), anyhow::Error>>(
-    program: &Program,
+    _program: &Program,
     kcl_pos: &KCLPos,
     include_declaration: bool,
-    prog_scope: &ProgramScope,
     word_index_map: Arc<RwLock<HashMap<Url, HashMap<String, Vec<Location>>>>>,
     vfs: Option<Arc<RwLock<Vfs>>>,
     logger: F,
     gs: &GlobalState,
+    module_cache: Option<KCLModuleCache>,
 ) -> Result<Vec<Location>, String> {
-    let def = find_def_with_gs(kcl_pos, &gs, true);
+    let def = find_def_with_gs(kcl_pos, gs, true);
     match def {
         Some(def_ref) => match gs.get_symbols().get_symbol(def_ref) {
             Some(obj) => {
@@ -37,6 +38,7 @@ pub(crate) fn find_refs<F: Fn(String) -> Result<(), anyhow::Error>>(
                         obj.get_name(),
                         include_declaration,
                         logger,
+                        module_cache,
                     ))
                 } else {
                     Err(format!("Invalid file path: {0}", start.filename))
@@ -59,45 +61,62 @@ pub(crate) fn find_refs_from_def<F: Fn(String) -> Result<(), anyhow::Error>>(
     name: String,
     include_declaration: bool,
     logger: F,
+    module_cache: Option<KCLModuleCache>,
 ) -> Vec<Location> {
     let mut ref_locations = vec![];
     for (_, word_index) in &mut *word_index_map.write() {
-        if let Some(locs) = word_index.get(name.as_str()).cloned() {
+        if let Some(mut locs) = word_index.get(name.as_str()).cloned() {
+            if locs.len() >= 20 {
+                let _ = logger(format!(
+                    "Found more than 20 matched symbols, only the first 20 will be processed"
+                ));
+                locs = locs[0..20].to_vec();
+            }
             let matched_locs: Vec<Location> = locs
                 .into_iter()
                 .filter(|ref_loc| {
                     // from location to real def
                     // return if the real def location matches the def_loc
-                    let file_path = ref_loc.uri.path().to_string();
-                    match parse_param_and_compile(
-                        Param {
-                            file: file_path.clone(),
-                        },
-                        vfs.clone(),
-                    ) {
-                        Ok((prog, scope, _, gs)) => {
-                            let ref_pos = kcl_pos(&file_path, ref_loc.range.start);
-                            if *ref_loc == def_loc && !include_declaration {
-                                return false;
-                            }
-                            // find def from the ref_pos
-                            if let Some(real_def) =
-                                goto_definition_with_gs(&prog, &ref_pos, &scope, &gs)
-                            {
-                                match real_def {
-                                    lsp_types::GotoDefinitionResponse::Scalar(real_def_loc) => {
-                                        real_def_loc == def_loc
+                    match file_path_from_url(&ref_loc.uri) {
+                        Ok(file_path) => {
+                            match parse_param_and_compile(
+                                Param {
+                                    file: file_path.clone(),
+                                    module_cache: module_cache.clone(),
+                                },
+                                vfs.clone(),
+                            ) {
+                                Ok((prog, _, _, gs)) => {
+                                    let ref_pos = kcl_pos(&file_path, ref_loc.range.start);
+                                    if *ref_loc == def_loc && !include_declaration {
+                                        return false;
                                     }
-                                    _ => false,
+                                    // find def from the ref_pos
+                                    if let Some(real_def) =
+                                        goto_definition_with_gs(&prog, &ref_pos, &gs)
+                                    {
+                                        match real_def {
+                                            lsp_types::GotoDefinitionResponse::Scalar(
+                                                real_def_loc,
+                                            ) => real_def_loc == def_loc,
+                                            _ => false,
+                                        }
+                                    } else {
+                                        false
+                                    }
                                 }
-                            } else {
-                                false
+                                Err(err) => {
+                                    let _ = logger(format!(
+                                        "{file_path} compilation failed: {}",
+                                        err.to_string()
+                                    ));
+                                    false
+                                }
                             }
                         }
-                        Err(_) => {
-                            let file_path = def_loc.uri.path();
-                            let _ = logger(format!("{file_path} compilation failed"));
-                            return false;
+                        Err(err) => {
+                            let _ = logger(format!("compilation failed: {}", err.to_string()));
+                            false
                         }
                     }
                 })
@@ -130,7 +149,7 @@ mod tests {
     fn setup_word_index_map(root: &str) -> HashMap<Url, HashMap<String, Vec<Location>>> {
         HashMap::from([(
             Url::from_file_path(root).unwrap(),
-            build_word_index(root.to_string()).unwrap(),
+            build_word_index(root.to_string(), true).unwrap(),
         )])
     }
 
@@ -189,6 +208,7 @@ mod tests {
                         "a".to_string(),
                         true,
                         logger,
+                        None,
                     ),
                 );
             }
@@ -243,6 +263,7 @@ mod tests {
                         "a".to_string(),
                         false,
                         logger,
+                        None,
                     ),
                 );
             }
@@ -297,6 +318,7 @@ mod tests {
                         "Name".to_string(),
                         true,
                         logger,
+                        None,
                     ),
                 );
             }
@@ -344,6 +366,7 @@ mod tests {
                         "name".to_string(),
                         true,
                         logger,
+                        None,
                     ),
                 );
             }

@@ -8,7 +8,7 @@ use walkdir::WalkDir;
 
 use crate::arguments::parse_key_value_pair;
 use crate::kpm_metadata::{fetch_metadata, fill_pkg_maps_for_k_file, lookup_the_nearest_file_dir};
-use crate::{canonicalize_input_files, expand_input_files};
+use crate::{canonicalize_input_files, expand_input_files, get_pkg_list};
 
 #[test]
 fn test_canonicalize_input_files() {
@@ -197,7 +197,6 @@ fn test_parse_key_value_pair_fail() {
     }
 }
 
-#[test]
 fn test_fill_pkg_maps_for_k_file() {
     let path = PathBuf::from(".")
         .join("src")
@@ -264,8 +263,14 @@ fn test_lookup_the_nearest_file_dir() {
         path.canonicalize().unwrap().display().to_string()
     );
 }
-
 #[test]
+fn test_fetch_metadata_in_order() {
+    test_fetch_metadata();
+    println!("test_fetch_metadata() passed");
+    test_fill_pkg_maps_for_k_file();
+    println!("test_fill_pkg_maps_for_k_file() passed");
+}
+
 fn test_fetch_metadata() {
     let path = PathBuf::from(".")
         .join("src")
@@ -323,4 +328,13 @@ fn test_fetch_metadata_invalid() {
         Ok(_) => println!("no panic"),
         Err(e) => panic!("The method should not panic forever.: {:?}", e),
     }
+}
+
+#[test]
+fn test_get_pkg_list() {
+    assert_eq!(get_pkg_list("./src/test_data/pkg_list/").unwrap().len(), 1);
+    assert_eq!(
+        get_pkg_list("./src/test_data/pkg_list/...").unwrap().len(),
+        3
+    );
 }

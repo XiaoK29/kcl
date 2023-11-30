@@ -1,6 +1,6 @@
 [package]
 name = "kclvm-api"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 edition = "2021"
 
 [dependencies]
@@ -32,6 +32,7 @@ kclvm-ast-pretty = {path = "../ast_pretty"}
 kclvm-runtime = {path = "../runtime"}
 kclvm-tools = {path = "../tools" }
 kclvm-query = {path = "../query"}
+kcl-language-server = {path = "../tools/src/LSP"}
 
 [dev-dependencies]
 criterion = "0.4.0"

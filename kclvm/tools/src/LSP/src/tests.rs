@@ -72,14 +72,20 @@ use crate::to_lsp::kcl_diag_to_lsp_diags;
 use crate::util::to_json;
 use crate::util::{apply_document_changes, parse_param_and_compile, Param};
 
+macro_rules! wait_async_compile {
+    () => {
+        thread::sleep(Duration::from_secs(2));
+    };
+}
+
 pub(crate) fn compare_goto_res(
     res: Option<GotoTypeDefinitionResponse>,
     pos: (&String, u32, u32, u32, u32),
 ) {
     match res.unwrap() {
         lsp_types::GotoDefinitionResponse::Scalar(loc) => {
-            let got_path = loc.uri.path();
-            assert_eq!(got_path, pos.0);
+            let got_path = file_path_from_url(&loc.uri).unwrap();
+            assert_eq!(got_path, pos.0.to_string());
 
             let (got_start, got_end) = (loc.range.start, loc.range.end);
 
@@ -117,7 +123,10 @@ pub(crate) fn compile_test_file(
     let file = test_file.to_str().unwrap().to_string();
 
     let (program, prog_scope, diags, gs) = parse_param_and_compile(
-        Param { file: file.clone() },
+        Param {
+            file: file.clone(),
+            module_cache: None,
+        },
         Some(Arc::new(RwLock::new(Default::default()))),
     )
     .unwrap();
@@ -260,6 +269,7 @@ fn diagnostics_test() {
     let (_, _, diags, _) = parse_param_and_compile(
         Param {
             file: file.to_string(),
+            module_cache: None,
         },
         Some(Arc::new(RwLock::new(Default::default()))),
     )
@@ -404,9 +414,10 @@ fn complete_import_external_file_test() {
         .output()
         .unwrap();
 
-    let (program, prog_scope, _, gs) = parse_param_and_compile(
+    let (program, _, _, gs) = parse_param_and_compile(
         Param {
             file: path.to_string(),
+            module_cache: None,
         },
         Some(Arc::new(RwLock::new(Default::default()))),
     )
@@ -417,7 +428,7 @@ fn complete_import_external_file_test() {
         line: 1,
         column: Some(11),
     };
-    let res = completion(Some('.'), &program, &pos, &prog_scope, &gs).unwrap();
+    let res = completion(Some('.'), &program, &pos, &gs).unwrap();
 
     let got_labels: Vec<String> = match &res {
         CompletionResponse::Array(arr) => arr.iter().map(|item| item.label.clone()).collect(),
@@ -461,9 +472,10 @@ fn goto_import_external_file_test() {
         .output()
         .unwrap();
 
-    let (program, prog_scope, diags, gs) = parse_param_and_compile(
+    let (program, _, diags, gs) = parse_param_and_compile(
         Param {
             file: path.to_string(),
+            module_cache: None,
         },
         Some(Arc::new(RwLock::new(Default::default()))),
     )
@@ -477,7 +489,7 @@ fn goto_import_external_file_test() {
         line: 1,
         column: Some(15),
     };
-    let res = goto_definition_with_gs(&program, &pos, &prog_scope, &gs);
+    let res = goto_definition_with_gs(&program, &pos, &gs);
     assert!(res.is_some());
 }
 
@@ -837,6 +849,7 @@ fn goto_def_test() {
         },
     );
 
+    wait_async_compile!();
     let id = server.next_request_id.get();
     server.next_request_id.set(id.wrapping_add(1));
 
@@ -893,6 +906,7 @@ fn complete_test() {
             },
         },
     );
+    wait_async_compile!();
 
     let id = server.next_request_id.get();
     server.next_request_id.set(id.wrapping_add(1));
@@ -961,6 +975,7 @@ fn hover_test() {
             },
         },
     );
+    wait_async_compile!();
 
     let id = server.next_request_id.get();
     server.next_request_id.set(id.wrapping_add(1));
@@ -1018,6 +1033,7 @@ fn hover_assign_in_lambda_test() {
             },
         },
     );
+    wait_async_compile!();
 
     let id = server.next_request_id.get();
     server.next_request_id.set(id.wrapping_add(1));
@@ -1125,9 +1141,10 @@ fn konfig_goto_def_test_base() {
     let mut base_path = konfig_path.clone();
     base_path.push("appops/nginx-example/base/base.k");
     let base_path_str = base_path.to_str().unwrap().to_string();
-    let (program, prog_scope, _, gs) = parse_param_and_compile(
+    let (program, _, _, gs) = parse_param_and_compile(
         Param {
             file: base_path_str.clone(),
+            module_cache: None,
         },
         Some(Arc::new(RwLock::new(Default::default()))),
     )
@@ -1139,7 +1156,7 @@ fn konfig_goto_def_test_base() {
         line: 7,
         column: Some(30),
     };
-    let res = goto_definition_with_gs(&program, &pos, &prog_scope, &gs);
+    let res = goto_definition_with_gs(&program, &pos, &gs);
     let mut expected_path = konfig_path.clone();
     expected_path.push("base/pkg/kusion_models/kube/frontend/server.k");
     compare_goto_res(
@@ -1153,7 +1170,7 @@ fn konfig_goto_def_test_base() {
         line: 9,
         column: Some(32),
     };
-    let res = goto_definition_with_gs(&program, &pos, &prog_scope, &gs);
+    let res = goto_definition_with_gs(&program, &pos, &gs);
     let mut expected_path = konfig_path.clone();
     expected_path.push("base/pkg/kusion_models/kube/frontend/container/container.k");
     compare_goto_res(
@@ -1167,7 +1184,7 @@ fn konfig_goto_def_test_base() {
         line: 9,
         column: Some(9),
     };
-    let res = goto_definition_with_gs(&program, &pos, &prog_scope, &gs);
+    let res = goto_definition_with_gs(&program, &pos, &gs);
     let mut expected_path = konfig_path.clone();
     expected_path.push("base/pkg/kusion_models/kube/frontend/server.k");
     compare_goto_res(
@@ -1187,7 +1204,7 @@ fn konfig_goto_def_test_base() {
         line: 10,
         column: Some(10),
     };
-    let res = goto_definition_with_gs(&program, &pos, &prog_scope, &gs);
+    let res = goto_definition_with_gs(&program, &pos, &gs);
     let mut expected_path = konfig_path.clone();
     expected_path.push("base/pkg/kusion_models/kube/frontend/container/container.k");
     compare_goto_res(
@@ -1201,7 +1218,7 @@ fn konfig_goto_def_test_base() {
         line: 2,
         column: Some(49),
     };
-    let res = goto_definition_with_gs(&program, &pos, &prog_scope, &gs);
+    let res = goto_definition_with_gs(&program, &pos, &gs);
     let mut expected_path = konfig_path.clone();
     expected_path.push("base/pkg/kusion_models/kube/frontend/service/service.k");
     compare_goto_res(
@@ -1216,9 +1233,10 @@ fn konfig_goto_def_test_main() {
     let mut main_path = konfig_path.clone();
     main_path.push("appops/nginx-example/dev/main.k");
     let main_path_str = main_path.to_str().unwrap().to_string();
-    let (program, prog_scope, _, gs) = parse_param_and_compile(
+    let (program, _, _, gs) = parse_param_and_compile(
         Param {
             file: main_path_str.clone(),
+            module_cache: None,
         },
         Some(Arc::new(RwLock::new(Default::default()))),
     )
@@ -1230,7 +1248,7 @@ fn konfig_goto_def_test_main() {
         line: 6,
         column: Some(31),
     };
-    let res = goto_definition_with_gs(&program, &pos, &prog_scope, &gs);
+    let res = goto_definition_with_gs(&program, &pos, &gs);
     let mut expected_path = konfig_path.clone();
     expected_path.push("base/pkg/kusion_models/kube/frontend/server.k");
     compare_goto_res(
@@ -1244,7 +1262,7 @@ fn konfig_goto_def_test_main() {
         line: 7,
         column: Some(14),
     };
-    let res = goto_definition_with_gs(&program, &pos, &prog_scope, &gs);
+    let res = goto_definition_with_gs(&program, &pos, &gs);
     let mut expected_path = konfig_path.clone();
     expected_path.push("base/pkg/kusion_models/kube/frontend/server.k");
     compare_goto_res(
@@ -1264,7 +1282,7 @@ fn konfig_goto_def_test_main() {
         line: 2,
         column: Some(61),
     };
-    let res = goto_definition_with_gs(&program, &pos, &prog_scope, &gs);
+    let res = goto_definition_with_gs(&program, &pos, &gs);
     let mut expected_path = konfig_path.clone();
     expected_path.push("base/pkg/kusion_models/kube/templates/resource.k");
     compare_goto_res(
@@ -1279,9 +1297,10 @@ fn konfig_completion_test_main() {
     let mut main_path = konfig_path.clone();
     main_path.push("appops/nginx-example/dev/main.k");
     let main_path_str = main_path.to_str().unwrap().to_string();
-    let (program, prog_scope, _, gs) = parse_param_and_compile(
+    let (program, _, _, gs) = parse_param_and_compile(
         Param {
             file: main_path_str.clone(),
+            module_cache: None,
         },
         Some(Arc::new(RwLock::new(Default::default()))),
     )
@@ -1293,15 +1312,15 @@ fn konfig_completion_test_main() {
         line: 6,
         column: Some(27),
     };
-    let got = completion(Some('.'), &program, &pos, &prog_scope, &gs).unwrap();
+    let got = completion(Some('.'), &program, &pos, &gs).unwrap();
     let got_labels: Vec<String> = match got {
         CompletionResponse::Array(arr) => arr.iter().map(|item| item.label.clone()).collect(),
         CompletionResponse::List(_) => panic!("test failed"),
     };
 
-    let expected_labels: Vec<String> = vec!["Job", "Server"]
+    let expected_labels: Vec<String> = ["Job", "Server"]
         .iter()
-        .map(|attr| format!("{}{}", attr, "{}"))
+        .map(|attr| attr.to_string())
         .collect();
     assert_eq!(got_labels, expected_labels);
 
@@ -1311,7 +1330,7 @@ fn konfig_completion_test_main() {
         line: 7,
         column: Some(4),
     };
-    let got = completion(None, &program, &pos, &prog_scope, &gs).unwrap();
+    let got = completion(None, &program, &pos, &gs).unwrap();
     let mut got_labels: Vec<String> = match got {
         CompletionResponse::Array(arr) => arr.iter().map(|item| item.label.clone()).collect(),
         CompletionResponse::List(_) => panic!("test failed"),
@@ -1394,7 +1413,7 @@ fn konfig_completion_test_main() {
         line: 1,
         column: Some(35),
     };
-    let got = completion(Some('.'), &program, &pos, &prog_scope, &gs).unwrap();
+    let got = completion(Some('.'), &program, &pos, &gs).unwrap();
     let mut got_labels: Vec<String> = match got {
         CompletionResponse::Array(arr) => arr.iter().map(|item| item.label.clone()).collect(),
         CompletionResponse::List(_) => panic!("test failed"),
@@ -1425,9 +1444,10 @@ fn konfig_hover_test_main() {
     let mut main_path = konfig_path.clone();
     main_path.push("appops/nginx-example/dev/main.k");
     let main_path_str = main_path.to_str().unwrap().to_string();
-    let (program, prog_scope, _, gs) = parse_param_and_compile(
+    let (program, _, _, gs) = parse_param_and_compile(
         Param {
             file: main_path_str.clone(),
+            module_cache: None,
         },
         Some(Arc::new(RwLock::new(Default::default()))),
     )
@@ -1439,14 +1459,12 @@ fn konfig_hover_test_main() {
         line: 6,
         column: Some(32),
     };
-    let got = hover(&program, &pos, &prog_scope, &gs).unwrap();
+    let got = hover(&program, &pos, &gs).unwrap();
     match got.contents {
         HoverContents::Array(arr) => {
-            let expect: Vec<MarkedString> = vec![
-                "base.pkg.kusion_models.kube.frontend\n\nschema Server",
+            let expect: Vec<MarkedString> = ["base.pkg.kusion_models.kube.frontend\n\nschema Server",
                 "Server is abstaction of Deployment and StatefulSet.",
-                "Attributes:\n\nname?: str\n\nworkloadType: str(Deployment) | str(StatefulSet)\n\nrenderType?: str(Server) | str(KubeVelaApplication)\n\nreplicas: int\n\nimage: str\n\nschedulingStrategy: SchedulingStrategy\n\nmainContainer: Main\n\nsidecarContainers?: [Sidecar]\n\ninitContainers?: [Sidecar]\n\nuseBuiltInLabels?: bool\n\nlabels?: {str:str}\n\nannotations?: {str:str}\n\nuseBuiltInSelector?: bool\n\nselector?: {str:str}\n\npodMetadata?: ObjectMeta\n\nvolumes?: [Volume]\n\nneedNamespace?: bool\n\nenableMonitoring?: bool\n\nconfigMaps?: [ConfigMap]\n\nsecrets?: [Secret]\n\nservices?: [Service]\n\ningresses?: [Ingress]\n\nserviceAccount?: ServiceAccount\n\nstorage?: ObjectStorage\n\ndatabase?: DataBase"
-            ]
+                "Attributes:\n\nname?: str\n\nworkloadType: str(Deployment) | str(StatefulSet)\n\nrenderType?: str(Server) | str(KubeVelaApplication)\n\nreplicas: int\n\nimage: str\n\nschedulingStrategy: SchedulingStrategy\n\nmainContainer: Main\n\nsidecarContainers?: [Sidecar]\n\ninitContainers?: [Sidecar]\n\nuseBuiltInLabels?: bool\n\nlabels?: {str:str}\n\nannotations?: {str:str}\n\nuseBuiltInSelector?: bool\n\nselector?: {str:str}\n\npodMetadata?: ObjectMeta\n\nvolumes?: [Volume]\n\nneedNamespace?: bool\n\nenableMonitoring?: bool\n\nconfigMaps?: [ConfigMap]\n\nsecrets?: [Secret]\n\nservices?: [Service]\n\ningresses?: [Ingress]\n\nserviceAccount?: ServiceAccount\n\nstorage?: ObjectStorage\n\ndatabase?: DataBase"]
             .iter()
             .map(|s| MarkedString::String(s.to_string()))
             .collect();
@@ -1461,10 +1479,10 @@ fn konfig_hover_test_main() {
         line: 7,
         column: Some(15),
     };
-    let got = hover(&program, &pos, &prog_scope, &gs).unwrap();
+    let got = hover(&program, &pos, &gs).unwrap();
     match got.contents {
         HoverContents::Array(arr) => {
-            let expect: Vec<MarkedString> = vec![
+            let expect: Vec<MarkedString> = [
                 "schedulingStrategy: SchedulingStrategy",
                 "SchedulingStrategy represents scheduling strategy.",
             ]
@@ -1482,7 +1500,7 @@ fn konfig_hover_test_main() {
         line: 6,
         column: Some(3),
     };
-    let got = hover(&program, &pos, &prog_scope, &gs).unwrap();
+    let got = hover(&program, &pos, &gs).unwrap();
     match got.contents {
         HoverContents::Scalar(s) => {
             assert_eq!(
@@ -1541,9 +1559,12 @@ fn lsp_invalid_subcommand_test() {
 
 #[test]
 fn find_refs_test() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("test_data")
+        .join("find_refs_test");
     let mut path = root.clone();
-    path.push("src/test_data/find_refs_test/main.k");
+    path.push("main.k");
 
     let path = path.to_str().unwrap();
     let src = std::fs::read_to_string(path).unwrap();
@@ -1555,7 +1576,7 @@ fn find_refs_test() {
     let server = Project {}.server(initialize_params);
 
     // Wait for async build word_index_map
-    thread::sleep(Duration::from_secs(1));
+    wait_async_compile!();
 
     let url = Url::from_file_path(path).unwrap();
 
@@ -1570,6 +1591,8 @@ fn find_refs_test() {
             },
         },
     );
+
+    wait_async_compile!();
 
     let id = server.next_request_id.get();
     server.next_request_id.set(id.wrapping_add(1));
@@ -1631,9 +1654,12 @@ fn find_refs_test() {
 
 #[test]
 fn find_refs_with_file_change_test() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("test_data")
+        .join("find_refs_test");
     let mut path = root.clone();
-    path.push("src/test_data/find_refs_test/main.k");
+    path.push("main.k");
 
     let path = path.to_str().unwrap();
     let src = std::fs::read_to_string(path).unwrap();
@@ -1645,7 +1671,7 @@ fn find_refs_with_file_change_test() {
     let server = Project {}.server(initialize_params);
 
     // Wait for async build word_index_map
-    thread::sleep(Duration::from_secs(1));
+    wait_async_compile!();
 
     let url = Url::from_file_path(path).unwrap();
 
@@ -1660,6 +1686,7 @@ fn find_refs_with_file_change_test() {
             },
         },
     );
+
     // Mock change file content
     server.notification::<lsp_types::notification::DidChangeTextDocument>(
         lsp_types::DidChangeTextDocumentParams {
@@ -1687,6 +1714,7 @@ p2 = Person {
             }],
         },
     );
+    wait_async_compile!();
     let id = server.next_request_id.get();
     server.next_request_id.set(id.wrapping_add(1));
     // Mock trigger find references
@@ -1732,11 +1760,14 @@ p2 = Person {
 
 #[test]
 fn rename_test() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("test_data")
+        .join("rename_test");
     let mut path = root.clone();
     let mut main_path = root.clone();
-    path.push("src/test_data/rename_test/pkg/vars.k");
-    main_path.push("src/test_data/rename_test/main.k");
+    path.push("pkg/vars.k");
+    main_path.push("main.k");
 
     let path = path.to_str().unwrap();
     let src = std::fs::read_to_string(path).unwrap();
@@ -1748,7 +1779,7 @@ fn rename_test() {
     let server = Project {}.server(initialize_params);
 
     // Wait for async build word_index_map
-    thread::sleep(Duration::from_secs(1));
+    wait_async_compile!();
 
     let url = Url::from_file_path(path).unwrap();
     let main_url = Url::from_file_path(main_path).unwrap();
@@ -1764,6 +1795,7 @@ fn rename_test() {
             },
         },
     );
+    wait_async_compile!();
 
     let id = server.next_request_id.get();
     server.next_request_id.set(id.wrapping_add(1));

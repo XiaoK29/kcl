@@ -1,10 +1,13 @@
 use crate::analysis::Analysis;
 use crate::config::Config;
 use crate::db::AnalysisDatabase;
+use crate::from_lsp::file_path_from_url;
 use crate::to_lsp::{kcl_diag_to_lsp_diags, url};
 use crate::util::{build_word_index, get_file_name, parse_param_and_compile, to_json, Param};
+use anyhow::Result;
 use crossbeam_channel::{select, unbounded, Receiver, Sender};
 use indexmap::IndexSet;
+use kclvm_parser::KCLModuleCache;
 use lsp_server::{ReqQueue, Response};
 use lsp_types::Url;
 use lsp_types::{
@@ -75,6 +78,9 @@ pub(crate) struct LanguageServerState {
 
     /// The word index map
     pub word_index_map: Arc<RwLock<HashMap<Url, HashMap<String, Vec<Location>>>>>,
+
+    /// KCL parse cache
+    pub module_cache: Option<KCLModuleCache>,
 }
 
 /// A snapshot of the state of the language server
@@ -83,11 +89,13 @@ pub(crate) struct LanguageServerSnapshot {
     /// The virtual filesystem that holds all the file contents
     pub vfs: Arc<RwLock<Vfs>>,
     /// Holds the state of the analysis process
-    pub db: HashMap<FileId, AnalysisDatabase>,
+    pub db: Arc<RwLock<HashMap<FileId, AnalysisDatabase>>>,
     /// Documents that are currently kept in memory from the client
     pub opened_files: IndexSet<FileId>,
     /// The word index map
     pub word_index_map: Arc<RwLock<HashMap<Url, HashMap<String, Vec<Location>>>>>,
+    /// KCL parse cache
+    pub module_cache: Option<KCLModuleCache>,
 }
 
 #[allow(unused)]
@@ -113,19 +121,22 @@ impl LanguageServerState {
             _config: config,
             vfs: Arc::new(RwLock::new(Default::default())),
             thread_pool: threadpool::ThreadPool::default(),
-            task_sender,
+            task_sender: task_sender.clone(),
             task_receiver,
             shutdown_requested: false,
             analysis: Analysis::default(),
             opened_files: IndexSet::new(),
             word_index_map: Arc::new(RwLock::new(HashMap::new())),
             loader,
+            module_cache: Some(KCLModuleCache::default()),
         };
 
         let word_index_map = state.word_index_map.clone();
-        state
-            .thread_pool
-            .execute(move || build_word_index_map(word_index_map, initialize_params));
+        state.thread_pool.execute(move || {
+            if let Err(err) = build_word_index_map(word_index_map, initialize_params, true) {
+                log_message(err.to_string(), &task_sender);
+            }
+        });
 
         state
     }
@@ -158,27 +169,18 @@ impl LanguageServerState {
         // 1. Process the incoming event
         match event {
             Event::Task(task) => self.handle_task(task)?,
-            Event::Lsp(msg) => match msg {
-                lsp_server::Message::Request(req) => self.on_request(req, start_time)?,
-                lsp_server::Message::Notification(not) => self.on_notification(not)?,
-                // lsp_server::Message::Response(resp) => self.complete_request(resp),
-                _ => {}
-            },
+            Event::Lsp(msg) => {
+                match msg {
+                    lsp_server::Message::Request(req) => self.on_request(req, start_time)?,
+                    lsp_server::Message::Notification(not) => self.on_notification(not)?,
+                    // lsp_server::Message::Response(resp) => self.complete_request(resp),
+                    _ => {}
+                }
+            }
         };
 
         // 2. Process changes
-        let state_changed: bool = self.process_vfs_changes();
-
-        // 3. Handle Diagnostics
-        if state_changed {
-            let mut snapshot = self.snapshot();
-            let task_sender = self.task_sender.clone();
-            // Spawn the diagnostics in the threadpool
-            self.thread_pool.execute(move || {
-                let _result = handle_diagnostics(snapshot, task_sender);
-            });
-        }
-
+        self.process_vfs_changes();
         Ok(())
     }
 
@@ -198,28 +200,60 @@ impl LanguageServerState {
         // Construct an AnalysisChange to apply to the analysis
         for file in changed_files {
             let vfs = self.vfs.read();
-
+            let start = Instant::now();
             match get_file_name(vfs, file.file_id) {
                 Ok(filename) => {
-                    match parse_param_and_compile(
-                        Param {
-                            file: filename.clone(),
-                        },
-                        Some(self.vfs.clone()),
-                    ) {
-                        Ok((prog, scope, diags, gs)) => {
-                            self.analysis.set_db(
-                                file.file_id,
-                                AnalysisDatabase {
-                                    prog,
-                                    scope,
-                                    diags,
-                                    gs,
-                                },
-                            );
+                    self.thread_pool.execute({
+                        let mut snapshot = self.snapshot();
+                        let sender = self.task_sender.clone();
+                        let module_cache = self.module_cache.clone();
+                        move || match url(&snapshot, file.file_id) {
+                            Ok(uri) => {
+                                match parse_param_and_compile(
+                                    Param {
+                                        file: filename.clone(),
+                                        module_cache,
+                                    },
+                                    Some(snapshot.vfs),
+                                ) {
+                                    Ok((prog, _, diags, gs)) => {
+                                        let mut db = snapshot.db.write();
+                                        db.insert(
+                                            file.file_id,
+                                            AnalysisDatabase {
+                                                prog,
+                                                diags: diags.clone(),
+                                                gs,
+                                            },
+                                        );
+
+                                        let diagnostics = diags
+                                            .iter()
+                                            .flat_map(|diag| {
+                                                kcl_diag_to_lsp_diags(diag, filename.as_str())
+                                            })
+                                            .collect::<Vec<Diagnostic>>();
+                                        sender.send(Task::Notify(lsp_server::Notification {
+                                            method: PublishDiagnostics::METHOD.to_owned(),
+                                            params: to_json(PublishDiagnosticsParams {
+                                                uri,
+                                                diagnostics,
+                                                version: None,
+                                            })
+                                            .unwrap(),
+                                        }));
+                                    }
+                                    Err(_) => {}
+                                }
+                            }
+                            Err(_) => {
+                                log_message(
+                                    format!("Interal bug: not a valid file:{:?}", filename),
+                                    &sender,
+                                );
+                            }
                         }
-                        Err(_) => self.log_message(format!("{filename} compilation failed")),
-                    }
+                    });
                 }
                 Err(_) => {
                     self.log_message(format!("{:?} not found", file.file_id));
@@ -278,6 +312,7 @@ impl LanguageServerState {
             db: self.analysis.db.clone(),
             opened_files: self.opened_files.clone(),
             word_index_map: self.word_index_map.clone(),
+            module_cache: self.module_cache.clone(),
         }
     }
 
@@ -289,37 +324,6 @@ impl LanguageServerState {
         );
         self.send(not.into());
     }
-}
-
-fn handle_diagnostics(
-    snapshot: LanguageServerSnapshot,
-    sender: Sender<Task>,
-) -> anyhow::Result<()> {
-    for file_id in &snapshot.opened_files {
-        let vfs = snapshot.vfs.read();
-        let filename = get_file_name(vfs, *file_id)?;
-        let uri = url(&snapshot, *file_id)?;
-
-        match snapshot.db.get(file_id) {
-            Some(db) => {
-                let diagnostics = db
-                    .diags
-                    .iter()
-                    .flat_map(|diag| kcl_diag_to_lsp_diags(diag, filename.as_str()))
-                    .collect::<Vec<Diagnostic>>();
-                sender.send(Task::Notify(lsp_server::Notification {
-                    method: PublishDiagnostics::METHOD.to_owned(),
-                    params: to_json(PublishDiagnosticsParams {
-                        uri,
-                        diagnostics,
-                        version: None,
-                    })?,
-                }))?;
-            }
-            None => continue,
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn log_message(message: String, sender: &Sender<Task>) -> anyhow::Result<()> {
@@ -334,18 +338,20 @@ pub(crate) fn log_message(message: String, sender: &Sender<Task>) -> anyhow::Res
 fn build_word_index_map(
     word_index_map: Arc<RwLock<HashMap<Url, HashMap<String, Vec<Location>>>>>,
     initialize_params: InitializeParams,
-) {
+    prune: bool,
+) -> Result<()> {
     if let Some(workspace_folders) = initialize_params.workspace_folders {
         for folder in workspace_folders {
-            let path = folder.uri.path();
-            if let Ok(word_index) = build_word_index(path.to_string()) {
+            let path = file_path_from_url(&folder.uri)?;
+            if let Ok(word_index) = build_word_index(path.to_string(), prune) {
                 word_index_map.write().insert(folder.uri, word_index);
             }
         }
     } else if let Some(root_uri) = initialize_params.root_uri {
-        let path = root_uri.path();
-        if let Ok(word_index) = build_word_index(path.to_string()) {
+        let path = file_path_from_url(&root_uri)?;
+        if let Ok(word_index) = build_word_index(path.to_string(), prune) {
             word_index_map.write().insert(root_uri, word_index);
         }
     }
+    Ok(())
 }

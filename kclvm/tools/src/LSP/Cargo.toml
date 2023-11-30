@@ -1,6 +1,6 @@
 [package]
 name = "kcl-language-server"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -30,7 +30,8 @@ kclvm-ast = { path = "../../../ast" }
 kclvm-utils = { path = "../../../utils" }
 kclvm-version = { path = "../../../version" }
 compiler_base_session = { path = "../../../../compiler_base/session" }
-kclvm-query = {path = "../../../query"}
+kclvm-query = { path = "../../../query" }
+kclvm-span = { path = "../../../span" }
 
 lsp-server = { version = "0.6.0", default-features = false }
 anyhow = { version = "1.0", default-features = false, features = ["std"] }

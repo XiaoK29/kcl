@@ -1,6 +1,7 @@
-use anyhow::{anyhow, Ok};
+use anyhow::anyhow;
 use crossbeam_channel::Sender;
 
+use kclvm_config::modfile::KCL_FILE_SUFFIX;
 use kclvm_sema::info::is_valid_kcl_name;
 use lsp_types::{Location, TextEdit};
 use ra_ap_vfs::VfsPath;
@@ -68,18 +69,19 @@ impl LanguageServerSnapshot {
         let res = self.vfs.read().file_id(path).is_some()
             && self
                 .db
+                .read()
                 .get(&self.vfs.read().file_id(path).unwrap())
                 .is_some();
         if !res {
-            let _ = log_message("Not a valid kcl path, request failed".to_string(), &sender);
+            let _ = log_message("Not a valid kcl path, request failed".to_string(), sender);
         }
         res
     }
 
-    pub(crate) fn get_db(&self, path: &VfsPath) -> anyhow::Result<&AnalysisDatabase> {
+    pub(crate) fn get_db(&self, path: &VfsPath) -> anyhow::Result<AnalysisDatabase> {
         match self.vfs.read().file_id(path) {
-            Some(id) => match self.db.get(&id) {
-                Some(db) => Ok(db),
+            Some(id) => match self.db.read().get(&id) {
+                Some(db) => Ok(db.clone()),
                 None => Err(anyhow::anyhow!(format!(
                     "Path {path} AnalysisDatabase not found"
                 ))),
@@ -148,7 +150,7 @@ pub(crate) fn handle_goto_definition(
     }
     let db = snapshot.get_db(&path.clone().into())?;
     let kcl_pos = kcl_pos(&file, params.text_document_position_params.position);
-    let res = goto_definition_with_gs(&db.prog, &kcl_pos, &db.scope, &db.gs);
+    let res = goto_definition_with_gs(&db.prog, &kcl_pos, &db.gs);
     if res.is_none() {
         log_message("Definition item not found".to_string(), &sender)?;
     }
@@ -170,15 +172,16 @@ pub(crate) fn handle_reference(
     let db = snapshot.get_db(&path.clone().into())?;
     let pos = kcl_pos(&file, params.text_document_position.position);
     let log = |msg: String| log_message(msg, &sender);
+    let module_cache = snapshot.module_cache.clone();
     match find_refs(
         &db.prog,
         &pos,
         include_declaration,
-        &db.scope,
         snapshot.word_index_map.clone(),
         Some(snapshot.vfs.clone()),
         log,
         &db.gs,
+        module_cache,
     ) {
         core::result::Result::Ok(locations) => Ok(Some(locations)),
         Err(msg) => {
@@ -200,16 +203,39 @@ pub(crate) fn handle_completion(
         return Ok(None);
     }
 
-    let db =
-        parse_param_and_compile(Param { file: file.clone() }, Some(snapshot.vfs.clone())).unwrap();
-
     let kcl_pos = kcl_pos(&file, params.text_document_position.position);
     let completion_trigger_character = params
         .context
         .and_then(|ctx| ctx.trigger_character)
         .and_then(|s| s.chars().next());
+    let (prog, gs) = match completion_trigger_character {
+        // Some trigger characters need to re-compile
+        Some(ch) => match ch {
+            '=' | ':' => {
+                match parse_param_and_compile(
+                    Param {
+                        file: file.clone(),
+                        module_cache: snapshot.module_cache.clone(),
+                    },
+                    Some(snapshot.vfs.clone()),
+                ) {
+                    Ok((prog, _, _, gs)) => (prog, gs),
+                    Err(_) => return Ok(None),
+                }
+            }
+            _ => {
+                let db = snapshot.get_db(&path.clone().into())?;
+                (db.prog, db.gs)
+            }
+        },
 
-    let res = completion(completion_trigger_character, &db.0, &kcl_pos, &db.1, &db.3);
+        None => {
+            let db = snapshot.get_db(&path.clone().into())?;
+            (db.prog, db.gs)
+        }
+    };
+
+    let res = completion(completion_trigger_character, &prog, &kcl_pos, &gs);
 
     if res.is_none() {
         log_message("Completion item not found".to_string(), &sender)?;
@@ -230,7 +256,7 @@ pub(crate) fn handle_hover(
     }
     let db = snapshot.get_db(&path.clone().into())?;
     let kcl_pos = kcl_pos(&file, params.text_document_position_params.position);
-    let res = hover::hover(&db.prog, &kcl_pos, &db.scope, &db.gs);
+    let res = hover::hover(&db.prog, &kcl_pos, &db.gs);
     if res.is_none() {
         log_message("Hover definition not found".to_string(), &sender)?;
     }
@@ -245,15 +271,28 @@ pub(crate) fn handle_document_symbol(
 ) -> anyhow::Result<Option<lsp_types::DocumentSymbolResponse>> {
     let file = file_path_from_url(&params.text_document.uri)?;
     let path = from_lsp::abs_path(&params.text_document.uri)?;
-    if !snapshot.verify_request_path(&path.clone().into(), &sender) {
+    if !snapshot.verify_request_path(&path.clone().into(), &sender)
+        && !file.ends_with(KCL_FILE_SUFFIX)
+    {
         return Ok(None);
     }
-    let db = snapshot.get_db(&path.clone().into())?;
-    let res = document_symbol(&file, &db.prog, &db.scope);
-    if res.is_none() {
-        log_message(format!("File {file} Document symbol not found"), &sender)?;
+
+    match parse_param_and_compile(
+        Param {
+            file: file.clone(),
+            module_cache: snapshot.module_cache.clone(),
+        },
+        Some(snapshot.vfs.clone()),
+    ) {
+        Ok((_, _, _, gs)) => {
+            let res = document_symbol(&file, &gs);
+            if res.is_none() {
+                log_message(format!("File {file} Document symbol not found"), &sender)?;
+            }
+            Ok(res)
+        }
+        Err(_) => return Ok(None),
     }
-    Ok(res)
 }
 
 /// Called when a `textDocument/rename` request was received.
@@ -281,11 +320,11 @@ pub(crate) fn handle_rename(
         &db.prog,
         &kcl_pos,
         true,
-        &db.scope,
         snapshot.word_index_map.clone(),
         Some(snapshot.vfs.clone()),
         log,
         &db.gs,
+        snapshot.module_cache.clone(),
     );
     match references {
         Result::Ok(locations) => {
@@ -300,12 +339,10 @@ pub(crate) fn handle_rename(
                     HashMap::new(),
                     |mut map: HashMap<lsp_types::Url, Vec<TextEdit>>, location| {
                         let uri = location.uri;
-                        map.entry(uri.clone())
-                            .or_insert_with(Vec::new)
-                            .push(TextEdit {
-                                range: location.range,
-                                new_text: new_name.clone(),
-                            });
+                        map.entry(uri.clone()).or_default().push(TextEdit {
+                            range: location.range,
+                            new_text: new_name.clone(),
+                        });
                         map
                     },
                 );
@@ -316,7 +353,7 @@ pub(crate) fn handle_rename(
         Err(msg) => {
             let err_msg = format!("Can not rename symbol: {msg}");
             log(err_msg.clone())?;
-            return Err(anyhow!(err_msg));
+            Err(anyhow!(err_msg))
         }
     }
 }

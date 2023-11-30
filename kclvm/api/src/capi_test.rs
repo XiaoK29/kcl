@@ -6,7 +6,7 @@ use serde::de::DeserializeOwned;
 use std::default::Default;
 use std::ffi::{CStr, CString};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 const TEST_DATA_PATH: &str = "./src/testdata";
 static TEST_MUTEX: Lazy<Mutex<i32>> = Lazy::new(|| Mutex::new(0i32));
@@ -67,6 +67,34 @@ fn test_c_api_call_override_file() {
         "KclvmService.OverrideFile",
         "override-file.json",
         "override-file.response.json",
+    );
+}
+
+#[test]
+fn test_c_api_get_full_schema_type() {
+    test_c_api::<GetFullSchemaTypeArgs, GetSchemaTypeResult, _>(
+        "KclvmService.GetFullSchemaType",
+        "get-full-schema-type.json",
+        "get-full-schema-type.response.json",
+        |r| {
+            for s_ty in &mut r.schema_type_list {
+                s_ty.filename = s_ty.filename.replace("/", "").replace("\\", "")
+            }
+        },
+    );
+}
+
+#[test]
+fn test_c_api_get_all_full_schema_types() {
+    test_c_api::<GetFullSchemaTypeArgs, GetSchemaTypeResult, _>(
+        "KclvmService.GetFullSchemaType",
+        "get-all-full-schema-types.json",
+        "get-all-full-schema-types.response.json",
+        |r| {
+            for s_ty in &mut r.schema_type_list {
+                s_ty.filename = s_ty.filename.replace("/", "").replace("\\", "")
+            }
+        },
     );
 }
 
@@ -145,11 +173,33 @@ fn test_c_api_load_settings_files() {
 
 #[test]
 fn test_c_api_rename() {
-    test_c_api_without_wrapper::<RenameArgs, RenameResult>(
+    // before test, load template from .bak
+    let path = Path::new(TEST_DATA_PATH).join("rename").join("main.k");
+    let backup_path = path.with_extension("bak");
+    let content = fs::read_to_string(backup_path.clone()).unwrap();
+    fs::write(path.clone(), content).unwrap();
+
+    test_c_api::<RenameArgs, RenameResult, _>(
         "KclvmService.Rename",
         "rename.json",
         "rename.response.json",
+        |r| {
+            r.changed_files = r
+                .changed_files
+                .iter()
+                .map(|f| {
+                    PathBuf::from(f)
+                        .canonicalize()
+                        .unwrap()
+                        .display()
+                        .to_string()
+                })
+                .collect();
+        },
     );
+
+    // after test, restore template from .bak
+    fs::remove_file(path.clone()).unwrap();
 }
 
 #[test]
@@ -158,6 +208,20 @@ fn test_c_api_rename_code() {
         "KclvmService.RenameCode",
         "rename-code.json",
         "rename-code.response.json",
+    );
+}
+
+#[test]
+fn test_c_api_testing() {
+    test_c_api::<TestArgs, TestResult, _>(
+        "KclvmService.Test",
+        "test.json",
+        "test.response.json",
+        |r| {
+            for i in &mut r.info {
+                i.duration = 0;
+            }
+        },
     );
 }
 
@@ -190,6 +254,7 @@ where
 
     let mut result = R::decode(result.to_bytes()).unwrap();
     let result_json = serde_json::to_string(&result).unwrap();
+
     let except_result_path = Path::new(TEST_DATA_PATH).join(output);
     let except_result_json = fs::read_to_string(&except_result_path).unwrap_or_else(|_| {
         panic!(

@@ -924,9 +924,9 @@ dependencies = [
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.0"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a62bc1cf6f830c2ec14a513a9fb124d0a213a629668a4186f329db21fe045652"
+checksum = "e13624c2627564efccf4934284bdd98cbaa14e79b0b5a141218e507b3a823456"
 dependencies = [
  "percent-encoding",
 ]
@@ -1181,9 +1181,9 @@ dependencies = [
 
 [[package]]
 name = "idna"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d20d6b07bfbc108882d88ed8e37d39636dcc260e15e30c45e6ba089610b917c"
+checksum = "634d9b1461af396cad843f47fdba5597a4f9e6ddd4bfb6ff5d85028c25cb12f6"
 dependencies = [
  "unicode-bidi",
  "unicode-normalization",
@@ -1394,7 +1394,7 @@ dependencies = [
 
 [[package]]
 name = "kcl-language-server"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1413,6 +1413,7 @@ dependencies = [
  "kclvm-parser",
  "kclvm-query",
  "kclvm-sema",
+ "kclvm-span",
  "kclvm-tools",
  "kclvm-utils",
  "kclvm-version",
@@ -1436,7 +1437,7 @@ dependencies = [
 
 [[package]]
 name = "kclvm"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 dependencies = [
  "anyhow",
  "cc",
@@ -1468,13 +1469,14 @@ dependencies = [
 
 [[package]]
 name = "kclvm-api"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 dependencies = [
  "anyhow",
  "criterion 0.4.0",
  "futures",
  "indexmap 1.9.3",
  "jsonrpc-stdio-server",
+ "kcl-language-server",
  "kclvm-ast",
  "kclvm-ast-pretty",
  "kclvm-config",
@@ -1503,7 +1505,7 @@ dependencies = [
 
 [[package]]
 name = "kclvm-ast"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 dependencies = [
  "compiler_base_span 0.0.2",
  "kclvm-error",
@@ -1516,7 +1518,7 @@ dependencies = [
 
 [[package]]
 name = "kclvm-ast-pretty"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 dependencies = [
  "compiler_base_macros",
  "compiler_base_session",
@@ -1530,7 +1532,7 @@ dependencies = [
 
 [[package]]
 name = "kclvm-cmd"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 dependencies = [
  "anyhow",
  "clap 4.3.19",
@@ -1548,7 +1550,7 @@ dependencies = [
 
 [[package]]
 name = "kclvm-compiler"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 dependencies = [
  "ahash",
  "bit-set",
@@ -1568,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "kclvm-config"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1592,7 +1594,7 @@ dependencies = [
 
 [[package]]
 name = "kclvm-driver"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 dependencies = [
  "anyhow",
  "glob",
@@ -1608,7 +1610,7 @@ dependencies = [
 
 [[package]]
 name = "kclvm-error"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 dependencies = [
  "annotate-snippets",
  "anyhow",
@@ -1626,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "kclvm-lexer"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 dependencies = [
  "expect-test",
  "kclvm-error",
@@ -1636,7 +1638,7 @@ dependencies = [
 
 [[package]]
 name = "kclvm-macros"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1646,7 +1648,7 @@ dependencies = [
 
 [[package]]
 name = "kclvm-parser"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 dependencies = [
  "anyhow",
  "bstr",
@@ -1679,7 +1681,7 @@ dependencies = [
 
 [[package]]
 name = "kclvm-query"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 dependencies = [
  "anyhow",
  "compiler_base_macros",
@@ -1690,12 +1692,13 @@ dependencies = [
  "kclvm-error",
  "kclvm-parser",
  "kclvm-sema",
+ "maplit",
  "pretty_assertions",
 ]
 
 [[package]]
 name = "kclvm-runner"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 dependencies = [
  "anyhow",
  "cc",
@@ -1729,7 +1732,7 @@ dependencies = [
 
 [[package]]
 name = "kclvm-runtime"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 dependencies = [
  "ahash",
  "base64",
@@ -1756,7 +1759,7 @@ dependencies = [
 
 [[package]]
 name = "kclvm-sema"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1790,7 +1793,7 @@ dependencies = [
 
 [[package]]
 name = "kclvm-span"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 dependencies = [
  "compiler_base_span 0.0.2",
  "kclvm-macros",
@@ -1800,7 +1803,7 @@ dependencies = [
 
 [[package]]
 name = "kclvm-tools"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 dependencies = [
  "anyhow",
  "compiler_base_session",
@@ -1828,11 +1831,11 @@ dependencies = [
 
 [[package]]
 name = "kclvm-utils"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 
 [[package]]
 name = "kclvm-version"
-version = "0.7.0-beta.1"
+version = "0.7.0-beta.2"
 dependencies = [
  "vergen",
 ]
@@ -1953,6 +1956,12 @@ dependencies = [
  "serde_repr",
  "url",
 ]
+
+[[package]]
+name = "maplit"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e2e65a1a2e43cfcb47a895c4c8b10d1f4a61097f9f254f183aee60cad9c651d"
 
 [[package]]
 name = "matches"
@@ -2220,9 +2229,9 @@ dependencies = [
 
 [[package]]
 name = "percent-encoding"
-version = "2.3.0"
+version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b2a4787296e9989611394c33f193f676704af1686e70b8f8033ab5ba9a35a94"
+checksum = "e3148f5046208a5d56bcfc03053e3ca6334e51da8dfb19b6cdc8b306fae3283e"
 
 [[package]]
 name = "pest"
@@ -3882,9 +3891,9 @@ checksum = "f28467d3e1d3c6586d8f25fa243f544f5800fec42d97032474e17222c2b75cfa"
 
 [[package]]
 name = "url"
-version = "2.4.0"
+version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50bff7831e19200a85b17131d085c25d7811bc4e186efdaf54bbd132994a88cb"
+checksum = "31e6302e3bb753d46e83516cae55ae196fc0c309407cf11ab35cc51a4c2a4633"
 dependencies = [
  "form_urlencoded",
  "idna",

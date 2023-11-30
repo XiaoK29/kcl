@@ -109,6 +109,7 @@ pub(crate) fn kclvm_get_service_fn_ptr_by_name(name: &str) -> u64 {
         "KclvmService.ExecProgram" => exec_program as *const () as u64,
         "KclvmService.OverrideFile" => override_file as *const () as u64,
         "KclvmService.GetSchemaType" => get_schema_type as *const () as u64,
+        "KclvmService.GetFullSchemaType" => get_full_schema_type as *const () as u64,
         "KclvmService.GetSchemaTypeMapping" => get_schema_type_mapping as *const () as u64,
         "KclvmService.FormatCode" => format_code as *const () as u64,
         "KclvmService.FormatPath" => format_path as *const () as u64,
@@ -117,6 +118,7 @@ pub(crate) fn kclvm_get_service_fn_ptr_by_name(name: &str) -> u64 {
         "KclvmService.LoadSettingsFiles" => load_settings_files as *const () as u64,
         "KclvmService.Rename" => rename as *const () as u64,
         "KclvmService.RenameCode" => rename_code as *const () as u64,
+        "KclvmService.Test" => test as *const () as u64,
         _ => panic!("unknown method name : {name}"),
     }
 }
@@ -179,6 +181,18 @@ pub(crate) fn get_schema_type(serv: *mut kclvm_service, args: *const c_char) -> 
     call!(serv, args, GetSchemaTypeArgs, get_schema_type)
 }
 
+/// Get full schema types from a kcl file or code.
+///
+/// # Parameters
+/// `exec_args`: [Option<ExecProgramArgs>]
+///     the items and compile parameters selected by the user in the KCL CLI
+///     serialized as protobuf byte sequence
+///
+/// `schema_name`: [Option<&str>]. The schema name, when the schema name is empty, all schemas are returned.
+pub(crate) fn get_full_schema_type(serv: *mut kclvm_service, args: *const c_char) -> *const c_char {
+    call!(serv, args, GetFullSchemaTypeArgs, get_full_schema_type)
+}
+
 /// Get schema types from a kcl file or code.
 ///
 /// # Parameters
@@ -238,4 +252,9 @@ pub(crate) fn rename(serv: *mut kclvm_service, args: *const c_char) -> *const c_
 /// return the changed code.
 pub(crate) fn rename_code(serv: *mut kclvm_service, args: *const c_char) -> *const c_char {
     call!(serv, args, RenameCodeArgs, rename_code)
+}
+
+/// Service for the testing tool.
+pub(crate) fn test(serv: *mut kclvm_service, args: *const c_char) -> *const c_char {
+    call!(serv, args, TestArgs, test)
 }

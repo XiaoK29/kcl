@@ -1,19 +1,27 @@
 use std::collections::HashMap;
 use std::io::Write;
+use std::path::PathBuf;
 use std::string::String;
 use std::sync::Arc;
 
 use crate::gpyrpc::*;
 
 use anyhow::anyhow;
+use kcl_language_server::rename;
 use kclvm_config::settings::build_settings_pathbuf;
 use kclvm_driver::canonicalize_input_files;
 use kclvm_parser::ParseSession;
 use kclvm_query::get_schema_type;
 use kclvm_query::override_file;
+use kclvm_query::query::get_full_schema_type;
+use kclvm_query::query::CompilationOptions;
+use kclvm_query::GetSchemaOption;
 use kclvm_runner::exec_program;
+use kclvm_sema::resolver::Options;
 use kclvm_tools::format::{format, format_source, FormatOptions};
 use kclvm_tools::lint::lint_files;
+use kclvm_tools::testing;
+use kclvm_tools::testing::TestRun;
 use kclvm_tools::vet::validator::validate;
 use kclvm_tools::vet::validator::LoaderKind;
 use kclvm_tools::vet::validator::ValidateOption;
@@ -190,6 +198,63 @@ impl KclvmServiceImpl {
                 Some(&args.schema_name)
             },
             Default::default(),
+        )? {
+            type_list.push(kcl_schema_ty_to_pb_ty(&schema_ty));
+        }
+
+        Ok(GetSchemaTypeResult {
+            schema_type_list: type_list,
+        })
+    }
+
+    /// Service for getting the full schema type list.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kclvm_api::service::service_impl::KclvmServiceImpl;
+    /// use kclvm_api::gpyrpc::*;
+    /// use std::path::Path;
+    ///
+    /// let serv = KclvmServiceImpl::default();
+    /// let work_dir_parent = Path::new(".").join("src").join("testdata").join("get_schema_ty");
+    /// let args = ExecProgramArgs {
+    ///     work_dir: work_dir_parent.join("aaa").canonicalize().unwrap().display().to_string(),
+    ///     k_filename_list: vec![
+    ///         work_dir_parent.join("aaa").join("main.k").canonicalize().unwrap().display().to_string()
+    ///     ],
+    ///     external_pkgs: vec![
+    ///         CmdExternalPkgSpec{
+    ///             pkg_name:"bbb".to_string(),
+    ///             pkg_path: work_dir_parent.join("bbb").canonicalize().unwrap().display().to_string()
+    ///         }
+    ///     ],
+    ///     ..Default::default()
+    /// };
+    ///
+    /// let result = serv.get_full_schema_type(&GetFullSchemaTypeArgs {
+    ///     exec_args: Some(args),
+    ///     schema_name: "a".to_string()
+    /// }).unwrap();
+    /// assert_eq!(result.schema_type_list.len(), 1);
+    /// ```
+    pub fn get_full_schema_type(
+        &self,
+        args: &GetFullSchemaTypeArgs,
+    ) -> anyhow::Result<GetSchemaTypeResult> {
+        let args_json = serde_json::to_string(&args.exec_args.clone().unwrap()).unwrap();
+
+        let mut type_list = Vec::new();
+
+        let exec_args = kclvm_runner::ExecProgramArgs::from_str(args_json.as_str());
+        for (_k, schema_ty) in get_full_schema_type(
+            Some(&args.schema_name),
+            CompilationOptions {
+                k_files: exec_args.clone().k_filename_list,
+                loader_opts: Some(exec_args.get_load_program_options()),
+                resolve_opts: Options::default(),
+                get_schema_opts: GetSchemaOption::default(),
+            },
         )? {
             type_list.push(kcl_schema_ty_to_pb_ty(&schema_ty));
         }
@@ -413,7 +478,7 @@ impl KclvmServiceImpl {
                 "json" => LoaderKind::JSON,
                 _ => LoaderKind::JSON,
             },
-            None,
+            transform_str_para(&args.file),
             transform_str_para(&args.code),
         )) {
             Ok(success) => (success, "".to_string()),
@@ -471,22 +536,45 @@ impl KclvmServiceImpl {
     /// ```
     /// use kclvm_api::service::service_impl::KclvmServiceImpl;
     /// use kclvm_api::gpyrpc::*;
+    /// # use std::path::PathBuf;
+    /// # use std::fs;
+    /// #
+    /// # let serv = KclvmServiceImpl::default();
+    /// # // before test, load template from .bak
+    /// # let path = PathBuf::from(".").join("src").join("testdata").join("rename_doc").join("main.k");
+    /// # let backup_path = path.with_extension("bak");
+    /// # let content = fs::read_to_string(backup_path.clone()).unwrap();
+    /// # fs::write(path.clone(), content).unwrap();
     ///
-    /// let serv = KclvmServiceImpl::default();
     /// let result = serv.rename(&RenameArgs {
+    ///     package_root: "./src/testdata/rename_doc".to_string(),
     ///     symbol_path: "a".to_string(),
-    ///     file_paths: vec!["./src/testdata/rename/main.k".to_string()],
+    ///     file_paths: vec!["./src/testdata/rename_doc/main.k".to_string()],
     ///     new_name: "a2".to_string(),
     /// }).unwrap();
     /// assert_eq!(result.changed_files.len(), 1);
+    ///
+    /// # // after test, restore template from .bak
+    /// # fs::remove_file(path.clone()).unwrap();
     /// ```
     pub fn rename(&self, args: &RenameArgs) -> anyhow::Result<RenameResult> {
+        let pkg_root = PathBuf::from(args.package_root.clone())
+            .canonicalize()?
+            .display()
+            .to_string();
         let symbol_path = args.symbol_path.clone();
-        let file_paths = args.file_paths.clone();
+        let mut file_paths = vec![];
+        for path in args.file_paths.iter() {
+            file_paths.push(PathBuf::from(path).canonicalize()?.display().to_string());
+        }
         let new_name = args.new_name.clone();
         Ok(RenameResult {
-            //todo: mock implementation
-            changed_files: file_paths,
+            changed_files: rename::rename_symbol_on_file(
+                &pkg_root,
+                &symbol_path,
+                &file_paths,
+                new_name,
+            )?,
         })
     }
 
@@ -501,8 +589,9 @@ impl KclvmServiceImpl {
     ///
     /// let serv = KclvmServiceImpl::default();
     /// let result = serv.rename_code(&RenameCodeArgs {
+    ///     package_root: "./src/testdata/rename".to_string(),
     ///     symbol_path: "a".to_string(),
-    ///     source_codes: vec![("./src/testdata/rename/main.k".to_string(), "a = 1\nb = a".to_string())].into_iter().collect(),
+    ///     source_codes: vec![("main.k".to_string(), "a = 1\nb = a".to_string())].into_iter().collect(),
     ///     new_name: "a2".to_string(),
     /// }).unwrap();
     /// assert_eq!(result.changed_codes.len(), 1);
@@ -514,5 +603,59 @@ impl KclvmServiceImpl {
         Ok(RenameCodeResult {
             changed_codes: source_codes,
         })
+    }
+
+    /// Service for the testing tool.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kclvm_api::service::service_impl::KclvmServiceImpl;
+    /// use kclvm_api::gpyrpc::*;
+    ///
+    /// let serv = KclvmServiceImpl::default();
+    /// let result = serv.test(&TestArgs {
+    ///     pkg_list: vec!["./src/testdata/testing/module/...".to_string()],
+    ///     ..TestArgs::default()
+    /// }).unwrap();
+    /// assert_eq!(result.info.len(), 2);
+    /// // Passed case
+    /// assert!(result.info[0].error.is_empty());
+    /// // Failed case
+    /// assert!(result.info[1].error.is_empty());
+    /// ```
+    pub fn test(&self, args: &TestArgs) -> anyhow::Result<TestResult> {
+        let mut result = TestResult::default();
+        let exec_args = match &args.exec_args {
+            Some(exec_args) => {
+                let args_json = serde_json::to_string(exec_args)?;
+                kclvm_runner::ExecProgramArgs::from_str(args_json.as_str())
+            }
+            None => kclvm_runner::ExecProgramArgs::default(),
+        };
+        let opts = testing::TestOptions {
+            exec_args,
+            run_regexp: args.run_regexp.clone(),
+            fail_fast: args.fail_fast,
+        };
+        for pkg in &args.pkg_list {
+            let suites = testing::load_test_suites(pkg, &opts)?;
+            for suite in &suites {
+                let suite_result = suite.run(&opts)?;
+                for (name, info) in &suite_result.info {
+                    result.info.push(TestCaseInfo {
+                        name: name.clone(),
+                        error: info
+                            .error
+                            .as_ref()
+                            .map(|e| e.to_string())
+                            .unwrap_or_default(),
+                        duration: info.duration.as_micros() as u64,
+                        log_message: info.log_message.clone(),
+                    })
+                }
+            }
+        }
+        Ok(result)
     }
 }
