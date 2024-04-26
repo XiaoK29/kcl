@@ -1,5 +1,5 @@
 import .pkg
-import .pkg.subpkg
+import .pkg.subpkg as sub
 
 schema Person2:
     a: bool
@@ -8,20 +8,20 @@ schema Person2:
     d: 1
     e: True
     f: {str:str}
-    g: subpkg.Person1
+    g: sub.Person1
 
 p: Person2{
     a  # complete `True` and `False`
 
-    b # complete `"abc"` and `"def"`
+    b  # complete `"abc"` and `"def"`
 
-    c # complete `[]`
+    c  # complete `[]`
 
-    d # complete `1`
+    d  # complete `1`
 
-    e # complete `True`
+    e  # complete `True`
 
-    f # complete `{}`
+    f  # complete `{}`
 
-    g # complete `subpkg.Person1{}`
+    g  # complete `subpkg.Person1{}`
 }

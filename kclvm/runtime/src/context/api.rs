@@ -1,14 +1,16 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
 #![allow(clippy::missing_safety_doc)]
 
 use crate::*;
 use std::os::raw::c_char;
 
+use self::eval::LazyEvalScope;
+
 #[allow(dead_code, non_camel_case_types)]
 type kclvm_context_t = Context;
 
 #[allow(dead_code, non_camel_case_types)]
-type kclvm_error_t = KclError;
+type kclvm_eval_scope_t = LazyEvalScope;
 
 #[allow(dead_code, non_camel_case_types)]
 type kclvm_kind_t = Kind;
@@ -20,7 +22,7 @@ type kclvm_type_t = Type;
 type kclvm_value_t = Value;
 
 #[allow(dead_code, non_camel_case_types)]
-type kclvm_char_t = i8;
+type kclvm_char_t = c_char;
 
 #[allow(dead_code, non_camel_case_types)]
 type kclvm_size_t = i32;
@@ -56,27 +58,6 @@ pub unsafe extern "C" fn kclvm_context_delete(p: *mut kclvm_context_t) {
 }
 
 // ----------------------------------------------------------------------------
-// main begin/end
-// ----------------------------------------------------------------------------
-
-#[no_mangle]
-#[runtime_fn]
-pub unsafe extern "C" fn kclvm_context_main_begin_hook(p: *mut kclvm_context_t) {
-    let p = mut_ptr_as_ref(p);
-    p.main_begin_hook();
-}
-
-#[no_mangle]
-#[runtime_fn]
-pub unsafe extern "C" fn kclvm_context_main_end_hook(
-    p: *mut kclvm_context_t,
-    return_value: *mut kclvm_value_ref_t,
-) -> *mut kclvm_value_ref_t {
-    let p = mut_ptr_as_ref(p);
-    p.main_end_hook(return_value)
-}
-
-// ----------------------------------------------------------------------------
 // panic_info
 // ----------------------------------------------------------------------------
 
@@ -84,7 +65,7 @@ pub unsafe extern "C" fn kclvm_context_main_end_hook(
 #[runtime_fn]
 pub unsafe extern "C" fn kclvm_context_set_kcl_location(
     p: *mut kclvm_context_t,
-    filename: *const i8,
+    filename: *const c_char,
     line: i32,
     col: i32,
 ) {
@@ -100,7 +81,7 @@ pub unsafe extern "C" fn kclvm_context_set_kcl_location(
 #[runtime_fn]
 pub unsafe extern "C" fn kclvm_context_set_kcl_pkgpath(
     p: *mut kclvm_context_t,
-    pkgpath: *const i8,
+    pkgpath: *const c_char,
 ) {
     let p = mut_ptr_as_ref(p);
     if !pkgpath.is_null() {
@@ -110,9 +91,33 @@ pub unsafe extern "C" fn kclvm_context_set_kcl_pkgpath(
 
 #[no_mangle]
 #[runtime_fn]
+pub unsafe extern "C" fn kclvm_context_set_kcl_modpath(
+    p: *mut kclvm_context_t,
+    module_path: *const c_char,
+) {
+    let p = mut_ptr_as_ref(p);
+    if !module_path.is_null() {
+        p.set_kcl_module_path(c2str(module_path));
+    }
+}
+
+#[no_mangle]
+#[runtime_fn]
+pub unsafe extern "C" fn kclvm_context_set_kcl_workdir(
+    p: *mut kclvm_context_t,
+    workdir: *const c_char,
+) {
+    let p = mut_ptr_as_ref(p);
+    if !workdir.is_null() {
+        p.set_kcl_workdir(c2str(workdir));
+    }
+}
+
+#[no_mangle]
+#[runtime_fn]
 pub unsafe extern "C" fn kclvm_context_set_kcl_filename(
     ctx: *mut kclvm_context_t,
-    filename: *const i8,
+    filename: *const c_char,
 ) {
     let ctx = mut_ptr_as_ref(ctx);
     if !filename.is_null() {
@@ -129,6 +134,84 @@ pub unsafe extern "C" fn kclvm_context_set_kcl_line_col(
 ) {
     let ctx = mut_ptr_as_ref(ctx);
     ctx.set_kcl_line_col(line, col);
+}
+
+// ----------------------------------------------------------------------------
+// Global values and evaluation scope.
+// ----------------------------------------------------------------------------
+
+#[no_mangle]
+#[runtime_fn]
+pub unsafe extern "C" fn kclvm_scope_new() -> *mut kclvm_eval_scope_t {
+    Box::into_raw(Box::default())
+}
+
+#[no_mangle]
+#[runtime_fn]
+pub unsafe extern "C" fn kclvm_scope_free(scope: *mut kclvm_eval_scope_t) {
+    drop(Box::from_raw(scope));
+}
+
+#[no_mangle]
+#[runtime_fn]
+pub unsafe extern "C" fn kclvm_scope_add_setter(
+    _ctx: *mut kclvm_context_t,
+    scope: *mut kclvm_eval_scope_t,
+    pkg: *const c_char,
+    name: *const c_char,
+    setter: *const u64,
+) {
+    let scope = mut_ptr_as_ref(scope);
+    let pkg = c2str(pkg);
+    let name = c2str(name);
+    let key = format!("{}.{}", pkg, name);
+    if !scope.setters.contains_key(&key) {
+        scope.setters.insert(key.clone(), vec![]);
+    }
+    if let Some(setters) = scope.setters.get_mut(&key) {
+        setters.push(setter as u64);
+    }
+}
+
+#[no_mangle]
+#[runtime_fn]
+pub unsafe extern "C" fn kclvm_scope_set(
+    _ctx: *mut kclvm_context_t,
+    scope: *mut kclvm_eval_scope_t,
+    pkg: *const c_char,
+    name: *const c_char,
+    value: *const kclvm_value_ref_t,
+) {
+    let scope = mut_ptr_as_ref(scope);
+    let value = ptr_as_ref(value);
+    let pkg = c2str(pkg);
+    let name = c2str(name);
+    let key = format!("{}.{}", pkg, name);
+    scope.set_value(&key, value);
+}
+
+#[no_mangle]
+#[runtime_fn]
+pub unsafe extern "C" fn kclvm_scope_get(
+    ctx: *mut kclvm_context_t,
+    scope: *mut kclvm_eval_scope_t,
+    pkg: *const c_char,
+    name: *const c_char,
+    target: *const c_char,
+    default: *const kclvm_value_ref_t,
+) -> *const kclvm_value_ref_t {
+    let ctx = mut_ptr_as_ref(ctx);
+    let scope = mut_ptr_as_ref(scope);
+    let pkg = c2str(pkg);
+    let name = c2str(name);
+    let target = format!("{}.{}", pkg, c2str(target));
+    let key = format!("{}.{}", pkg, name);
+    // Existing values or existing but not yet calculated values.
+    if scope.contains_key(&key) || scope.setters.contains_key(&key) {
+        scope.get_value(ctx, &key, &target).into_raw(ctx)
+    } else {
+        default
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -156,7 +239,7 @@ pub unsafe extern "C" fn kclvm_context_set_strict_range_check(
 #[runtime_fn]
 pub unsafe extern "C" fn kclvm_context_set_disable_none(p: *mut kclvm_context_t, v: kclvm_bool_t) {
     let p = mut_ptr_as_ref(p);
-    p.cfg.disable_none = v != 0;
+    p.plan_opts.disable_none = v != 0;
 }
 
 #[no_mangle]
@@ -167,16 +250,6 @@ pub unsafe extern "C" fn kclvm_context_set_disable_schema_check(
 ) {
     let p = mut_ptr_as_ref(p);
     p.cfg.disable_schema_check = v != 0;
-}
-
-#[no_mangle]
-#[runtime_fn]
-pub unsafe extern "C" fn kclvm_context_set_list_option_mode(
-    p: *mut kclvm_context_t,
-    v: kclvm_bool_t,
-) {
-    let p = mut_ptr_as_ref(p);
-    p.cfg.list_option_mode = v != 0;
 }
 
 // ----------------------------------------------------------------------------
@@ -199,7 +272,7 @@ pub unsafe extern "C" fn kclvm_context_invoke(
     let result = _kclvm_context_invoke(p, method, args, kwargs);
 
     p.buffer.kclvm_context_invoke_result = ptr_as_ref(result).to_json_string_with_null();
-    let result_json = p.buffer.kclvm_context_invoke_result.as_ptr() as *const i8;
+    let result_json = p.buffer.kclvm_context_invoke_result.as_ptr() as *const c_char;
 
     kclvm_value_delete(args);
     kclvm_value_delete(kwargs);

@@ -10,10 +10,7 @@ use kclvm_ast::{
 use super::{Indentation, Printer};
 
 type ParameterType<'a> = (
-    (
-        &'a ast::NodeRef<ast::Identifier>,
-        &'a Option<ast::NodeRef<String>>,
-    ),
+    (&'a ast::NodeRef<ast::Identifier>, Option<String>),
     &'a Option<ast::NodeRef<ast::Expr>>,
 );
 
@@ -124,15 +121,24 @@ impl<'p, 'ctx> MutSelfTypedResultWalker<'ctx> for Printer<'p> {
         self.write_indentation(Indentation::Indent);
         self.stmts(&if_stmt.body);
         self.write_indentation(Indentation::Dedent);
+
         if !if_stmt.orelse.is_empty() {
-            if let ast::Stmt::If(elif_stmt) = &if_stmt.orelse[0].node {
-                // Nested if statements need to be considered,
-                // so `el` needs to be preceded by the current indentation.
-                self.fill("el");
-                self.walk_if_stmt(elif_stmt);
+            // Check if orelse contains exactly one if statement
+            if if_stmt.orelse.len() == 1 {
+                if let ast::Stmt::If(elif_stmt) = &if_stmt.orelse[0].node {
+                    // Nested if statements need to be considered,
+                    // so `el` needs to be preceded by the current indentation.
+                    self.fill("el");
+                    self.walk_if_stmt(elif_stmt);
+                } else {
+                    self.fill("else:");
+                    self.write_newline_without_fill();
+                    self.write_indentation(Indentation::Indent);
+                    self.stmts(&if_stmt.orelse);
+                    self.write_indentation(Indentation::Dedent);
+                }
             } else {
-                // Nested if statements need to be considered,
-                // so `el` needs to be preceded by the current indentation.
+                // Handle multiple else statements
                 self.fill("else:");
                 self.write_newline_without_fill();
                 self.write_indentation(Indentation::Indent);
@@ -146,10 +152,10 @@ impl<'p, 'ctx> MutSelfTypedResultWalker<'ctx> for Printer<'p> {
 
     fn walk_import_stmt(&mut self, import_stmt: &'ctx ast::ImportStmt) -> Self::Result {
         self.write("import ");
-        self.write(&import_stmt.path);
+        self.write(&import_stmt.path.node);
         if let Some(as_name) = &import_stmt.asname {
             self.write(" as ");
-            self.write(as_name);
+            self.write(&as_name.node);
         }
         self.write_newline_without_fill();
     }
@@ -224,11 +230,11 @@ impl<'p, 'ctx> MutSelfTypedResultWalker<'ctx> for Printer<'p> {
             if let Some(key_name) = &index_signature.node.key_name {
                 self.write(&format!("{}: ", key_name));
             }
-            self.write(&index_signature.node.key_type.node);
+            self.write(&index_signature.node.key_ty.node.to_string());
             self.write_token(TokenKind::CloseDelim(DelimToken::Bracket));
             self.write_token(TokenKind::Colon);
             self.write_space();
-            self.write(&index_signature.node.value_type.node);
+            self.write(&index_signature.node.value_ty.node.to_string());
             if let Some(value) = &index_signature.node.value {
                 self.write(" = ");
                 self.expr(value);
@@ -345,17 +351,19 @@ impl<'p, 'ctx> MutSelfTypedResultWalker<'ctx> for Printer<'p> {
         if !schema_attr.decorators.is_empty() {
             self.write_newline();
         }
-        self.write_attribute(&schema_attr.name);
+        // A schema string attribute needs quote.
+        if !schema_attr.is_ident_attr() {
+            self.write(&format!("{:?}", schema_attr.name.node));
+        } else {
+            self.write_attribute(&schema_attr.name);
+        }
         if schema_attr.is_optional {
             self.write("?");
         }
         self.write(": ");
-        self.write(&schema_attr.type_str.node);
+        self.write(&schema_attr.ty.node.to_string());
         if let Some(op) = &schema_attr.op {
-            let symbol = match op {
-                ast::BinOrAugOp::Bin(bin_op) => bin_op.symbol(),
-                ast::BinOrAugOp::Aug(aug_op) => aug_op.symbol(),
-            };
+            let symbol = op.symbol();
             self.write_space();
             self.write(symbol);
             self.write_space();
@@ -385,10 +393,7 @@ impl<'p, 'ctx> MutSelfTypedResultWalker<'ctx> for Printer<'p> {
     }
 
     fn walk_binary_expr(&mut self, binary_expr: &'ctx ast::BinaryExpr) -> Self::Result {
-        let symbol = match &binary_expr.op {
-            ast::BinOrCmpOp::Bin(bin_op) => bin_op.symbol(),
-            ast::BinOrCmpOp::Cmp(cmp_op) => cmp_op.symbol(),
-        };
+        let symbol = binary_expr.op.symbol();
         self.expr(&binary_expr.left);
         self.write_space();
         self.write(symbol);
@@ -671,11 +676,11 @@ impl<'p, 'ctx> MutSelfTypedResultWalker<'ctx> for Printer<'p> {
             self.write_space();
             self.walk_arguments(&args.node);
         }
-        if let Some(ty_str) = &lambda_expr.return_type_str {
+        if let Some(ty_str) = &lambda_expr.return_ty {
             self.write_space();
             self.write_token(TokenKind::RArrow);
             self.write_space();
-            self.write(ty_str);
+            self.write(&ty_str.node.to_string());
         }
         self.write_space();
         self.write_token(TokenKind::OpenDelim(DelimToken::Brace));
@@ -686,7 +691,7 @@ impl<'p, 'ctx> MutSelfTypedResultWalker<'ctx> for Printer<'p> {
         self.stmts(&lambda_expr.body);
 
         self.write_indentation(Indentation::Dedent);
-        self.write_newline();
+        self.fill("");
         self.write_token(TokenKind::CloseDelim(DelimToken::Brace));
     }
 
@@ -702,7 +707,12 @@ impl<'p, 'ctx> MutSelfTypedResultWalker<'ctx> for Printer<'p> {
         let parameter_zip_list: Vec<ParameterType<'_>> = arguments
             .args
             .iter()
-            .zip(arguments.type_annotation_list.iter())
+            .zip(
+                arguments
+                    .ty_list
+                    .iter()
+                    .map(|ty| ty.clone().map(|n| n.node.to_string())),
+            )
             .zip(arguments.defaults.iter())
             .collect();
         interleave!(
@@ -711,7 +721,7 @@ impl<'p, 'ctx> MutSelfTypedResultWalker<'ctx> for Printer<'p> {
                 let ((arg, ty_str), default) = para;
                 self.walk_identifier(&arg.node);
                 if let Some(ty_str) = ty_str {
-                    self.write(&format!(": {}", ty_str.node));
+                    self.write(&format!(": {}", ty_str));
                 }
                 if let Some(default) = default {
                     self.write(" = ");
@@ -851,7 +861,7 @@ impl<'p> Printer<'p> {
             ast::Expr::Identifier(identifier) => {
                 self.hook.pre(self, super::ASTNode::Expr(key));
                 self.write_ast_comments(key);
-                // Judge contains string identifier, e.g., "x-y-z"
+                // Judge contains string or dot identifier, e.g., "x-y-z" and "a.b.c"
                 let names = &identifier.names;
 
                 let re = fancy_regex::Regex::new(IDENTIFIER_REGEX).unwrap();
@@ -860,7 +870,7 @@ impl<'p> Printer<'p> {
                     self.write(
                         &names
                             .iter()
-                            .map(|n| format!("{n:?}"))
+                            .map(|n| format!("{:?}", n.node))
                             .collect::<Vec<String>>()
                             .join(": {"),
                     );

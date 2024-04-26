@@ -13,7 +13,7 @@ mod schema;
 pub mod scope;
 pub(crate) mod ty;
 mod ty_alias;
-mod type_erasure;
+mod ty_erasure;
 mod var;
 
 #[cfg(test)]
@@ -21,21 +21,20 @@ mod tests;
 
 use indexmap::IndexMap;
 use kclvm_error::diagnostic::Range;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::{cell::RefCell, rc::Rc};
 
 use crate::lint::{CombinedLintPass, Linter};
 use crate::pre_process::pre_process_program;
 use crate::resolver::scope::ScopeObject;
-use crate::resolver::ty_alias::process_program_type_alias;
-use crate::resolver::type_erasure::type_erasure;
-use crate::ty::{TypeContext, TypeRef};
+use crate::resolver::ty_alias::type_alias_pass;
+use crate::resolver::ty_erasure::type_func_erasure_pass;
+use crate::ty::TypeContext;
 use crate::{resolver::scope::Scope, ty::SchemaType};
-use kclvm_ast::ast::AstIndex;
 use kclvm_ast::ast::Program;
 use kclvm_error::*;
 
-use self::scope::{builtin_scope, CachedScope, ProgramScope};
+use self::scope::{builtin_scope, KCLScopeCache, NodeTyMap, ProgramScope};
 
 /// Resolver is responsible for program semantic checking, mainly
 /// including type checking and contract model checking.
@@ -44,7 +43,7 @@ pub struct Resolver<'ctx> {
     pub scope_map: IndexMap<String, Rc<RefCell<Scope>>>,
     pub scope: Rc<RefCell<Scope>>,
     pub scope_level: usize,
-    pub node_ty_map: IndexMap<AstIndex, TypeRef>,
+    pub node_ty_map: NodeTyMap,
     pub builtin_scope: Rc<RefCell<Scope>>,
     pub ctx: Context,
     pub options: Options,
@@ -150,7 +149,7 @@ pub struct Options {
     pub lint_check: bool,
     pub resolve_val: bool,
     pub merge_program: bool,
-    pub type_alise: bool,
+    pub type_erasure: bool,
 }
 
 impl Default for Options {
@@ -159,7 +158,7 @@ impl Default for Options {
             lint_check: true,
             resolve_val: false,
             merge_program: true,
-            type_alise: true,
+            type_erasure: true,
         }
     }
 }
@@ -174,7 +173,7 @@ pub fn resolve_program(program: &mut Program) -> ProgramScope {
 pub fn resolve_program_with_opts(
     program: &mut Program,
     opts: Options,
-    cached_scope: Option<Arc<Mutex<CachedScope>>>,
+    cached_scope: Option<KCLScopeCache>,
 ) -> ProgramScope {
     pre_process_program(program, &opts);
     let mut resolver = Resolver::new(program, opts.clone());
@@ -197,11 +196,12 @@ pub fn resolve_program_with_opts(
         }
     }
 
-    if opts.type_alise {
+    if opts.type_erasure {
         let type_alias_mapping = resolver.ctx.type_alias_mapping.clone();
-        process_program_type_alias(program, type_alias_mapping);
+        // Erase all the function type to a named type "function"
+        type_func_erasure_pass(program);
+        // Erase types with their type alias
+        type_alias_pass(program, type_alias_mapping);
     }
-    // erase all the function type to "function" on ast
-    type_erasure(program);
     scope
 }

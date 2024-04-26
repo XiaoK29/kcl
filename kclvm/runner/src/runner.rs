@@ -1,5 +1,7 @@
 use anyhow::{anyhow, Result};
+use kclvm_evaluator::Evaluator;
 use std::collections::HashMap;
+use std::{cell::RefCell, rc::Rc};
 
 use kclvm_ast::ast;
 use kclvm_config::{
@@ -8,14 +10,20 @@ use kclvm_config::{
 };
 use kclvm_error::{Diagnostic, Handler};
 use kclvm_query::r#override::parse_override_spec;
-use kclvm_runtime::{Context, PanicInfo, ValueRef};
+#[cfg(not(target_arch = "wasm32"))]
+use kclvm_runtime::kclvm_plugin_init;
+#[cfg(feature = "llvm")]
+use kclvm_runtime::FFIRunOptions;
+use kclvm_runtime::{Context, PanicInfo, RuntimePanicRecord};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
+use std::os::raw::c_char;
 
 const RESULT_SIZE: usize = 2048 * 2048;
+const KCL_DEBUG_ERROR_ENV_VAR: &str = "KCL_DEBUG_ERROR";
 
 #[allow(non_camel_case_types)]
-pub type kclvm_char_t = i8;
+pub type kclvm_char_t = c_char;
 #[allow(non_camel_case_types)]
 pub type kclvm_size_t = i32;
 #[allow(non_camel_case_types)]
@@ -28,37 +36,41 @@ pub type kclvm_value_ref_t = std::ffi::c_void;
 pub struct ExecProgramArgs {
     pub work_dir: Option<String>,
     pub k_filename_list: Vec<String>,
-    // -E key=value
+    /// -E key=value
     pub external_pkgs: Vec<ast::CmdExternalPkgSpec>,
     pub k_code_list: Vec<String>,
-    // -D key=value
+    /// -D key=value
     pub args: Vec<ast::CmdArgSpec>,
-    // -O override_spec
+    /// -O override_spec
     pub overrides: Vec<ast::OverrideSpec>,
-    // -S path_selector
+    /// -S path_selector
     pub path_selector: Vec<String>,
     pub disable_yaml_result: bool,
-    // Whether to apply overrides on the source code.
+    /// Whether to apply overrides on the source code.
     pub print_override_ast: bool,
-    // -r --strict-range-check
+    /// -r --strict-range-check
     pub strict_range_check: bool,
-    // -n --disable-none
+    /// -n --disable-none
     pub disable_none: bool,
-    // -v --verbose
+    /// -v --verbose
     pub verbose: i32,
-    // -d --debug
+    /// -d --debug
     pub debug: i32,
-    // yaml/json: sort keys
+    /// yaml/json: sort keys
     pub sort_keys: bool,
+    /// Show hidden attributes
+    pub show_hidden: bool,
     /// Whether including schema type in JSON/YAML result
     pub include_schema_type_path: bool,
-    // Whether to compile only.
+    /// Whether to compile only.
     pub compile_only: bool,
-    // Whether to compile diractroy recursively.
-    pub recursive: bool,
-    // plugin_agent is the address of plugin.
+    /// plugin_agent is the address of plugin.
     #[serde(skip)]
     pub plugin_agent: u64,
+    /// fast_eval denotes directly executing at the AST level to obtain
+    /// the result without any form of compilation.
+    #[serde(skip)]
+    pub fast_eval: bool,
 }
 
 impl ExecProgramArgs {
@@ -152,10 +164,7 @@ impl ExecProgramArgs {
             vendor_dirs: vec![get_vendor_home()],
             package_maps: self.get_package_maps_from_external_pkg(),
             k_code_list: self.k_code_list.clone(),
-            cmd_args: self.args.clone(),
-            cmd_overrides: self.overrides.clone(),
             load_plugins: self.plugin_agent > 0,
-            recursive: self.recursive,
             ..Default::default()
         }
     }
@@ -175,7 +184,8 @@ impl TryFrom<SettingsFile> for ExecProgramArgs {
             args.verbose = cli_configs.verbose.unwrap_or_default() as i32;
             args.debug = cli_configs.debug.unwrap_or_default() as i32;
             args.sort_keys = cli_configs.sort_keys.unwrap_or_default();
-            args.recursive = cli_configs.recursive.unwrap_or_default();
+            args.show_hidden = cli_configs.show_hidden.unwrap_or_default();
+            args.fast_eval = cli_configs.fast_eval.unwrap_or_default();
             args.include_schema_type_path =
                 cli_configs.include_schema_type_path.unwrap_or_default();
             for override_str in &cli_configs.overrides.unwrap_or_default() {
@@ -208,8 +218,16 @@ impl TryFrom<SettingsPathBuf> for ExecProgramArgs {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct RunnerOptions {
+    pub plugin_agent_ptr: u64,
+}
+
+#[cfg(feature = "llvm")]
 /// A public struct named [Artifact] which wraps around the native library [libloading::Library].
-pub struct Artifact(libloading::Library);
+pub struct Artifact(libloading::Library, String);
+#[cfg(not(feature = "llvm"))]
+pub struct Artifact(String);
 
 pub trait ProgramRunner {
     /// Run with the arguments [ExecProgramArgs] and return the program execute result that
@@ -219,32 +237,57 @@ pub trait ProgramRunner {
 
 impl ProgramRunner for Artifact {
     fn run(&self, args: &ExecProgramArgs) -> Result<ExecProgramResult> {
+        #[cfg(feature = "llvm")]
         unsafe {
-            KclLibRunner::lib_kclvm_plugin_init(&self.0, args.plugin_agent)?;
-            KclLibRunner::lib_kcl_run(&self.0, args)
+            LibRunner::lib_kclvm_plugin_init(&self.0, args.plugin_agent)?;
+            LibRunner::lib_kcl_run(&self.0, args)
+        }
+        #[cfg(not(feature = "llvm"))]
+        {
+            let _ = args;
+            Err(anyhow::anyhow!("error: llvm feature is not enabled. Note: Set KCL_FAST_EVAL=1 or rebuild the crate with the llvm feature."))
         }
     }
 }
 
+#[cfg(feature = "llvm")]
 impl Artifact {
+    #[inline]
     pub fn from_path<P: AsRef<OsStr>>(path: P) -> Result<Self> {
-        let lib = unsafe { libloading::Library::new(path)? };
-        Ok(Self(lib))
+        let path = path.as_ref().to_str().unwrap().to_string();
+        let lib = unsafe { libloading::Library::new(&path)? };
+        Ok(Self(lib, path))
+    }
+
+    #[inline]
+    pub fn get_path(&self) -> &String {
+        &self.1
     }
 }
 
-#[derive(Debug, Default)]
-pub struct KclLibRunnerOptions {
-    pub plugin_agent_ptr: u64,
+#[cfg(not(feature = "llvm"))]
+impl Artifact {
+    #[inline]
+    pub fn from_path<P: AsRef<OsStr>>(path: P) -> Result<Self> {
+        let path = path.as_ref().to_str().unwrap().to_string();
+        Ok(Self(path))
+    }
+
+    #[inline]
+    pub fn get_path(&self) -> &String {
+        &self.0
+    }
 }
 
-pub struct KclLibRunner {
-    opts: KclLibRunnerOptions,
+#[cfg(feature = "llvm")]
+pub struct LibRunner {
+    opts: RunnerOptions,
 }
 
-impl KclLibRunner {
+#[cfg(feature = "llvm")]
+impl LibRunner {
     /// New a runner using the lib path and options.
-    pub fn new(opts: Option<KclLibRunnerOptions>) -> Self {
+    pub fn new(opts: Option<RunnerOptions>) -> Self {
         Self {
             opts: opts.unwrap_or_default(),
         }
@@ -260,7 +303,8 @@ impl KclLibRunner {
     }
 }
 
-impl KclLibRunner {
+#[cfg(feature = "llvm")]
+impl LibRunner {
     unsafe fn lib_kclvm_plugin_init(
         lib: &libloading::Library,
         plugin_method_ptr: u64,
@@ -305,110 +349,103 @@ impl KclLibRunner {
                 option_len: kclvm_size_t,
                 option_keys: *const *const kclvm_char_t,
                 option_values: *const *const kclvm_char_t,
-                strict_range_check: i32,
-                disable_none: i32,
-                disable_schema_check: i32,
-                list_option_mode: i32,
-                debug_mode: i32,
-                result_buffer_len: *mut kclvm_size_t,
-                result_buffer: *mut kclvm_char_t,
-                warn_buffer_len: *mut kclvm_size_t,
-                warn_buffer: *mut kclvm_char_t,
+                opts: FFIRunOptions,
+                path_selector: *const *const kclvm_char_t,
+                json_result_buffer_len: *mut kclvm_size_t,
+                json_result_buffer: *mut kclvm_char_t,
+                yaml_result_buffer_len: *mut kclvm_size_t,
+                yaml_result_buffer: *mut kclvm_char_t,
+                err_buffer_len: *mut kclvm_size_t,
+                err_buffer: *mut kclvm_char_t,
                 log_buffer_len: *mut kclvm_size_t,
                 log_buffer: *mut kclvm_char_t,
             ) -> kclvm_size_t,
         > = lib.get(b"_kcl_run")?;
 
+        // The lib main function
         let kclvm_main: libloading::Symbol<u64> = lib.get(b"kclvm_main")?;
         let kclvm_main_ptr = kclvm_main.into_raw().into_raw() as u64;
 
-        // CLI configs
+        // CLI configs option len
         let option_len = args.args.len() as kclvm_size_t;
-
+        // CLI configs option keys
         let cstr_argv: Vec<_> = args
             .args
             .iter()
             .map(|arg| std::ffi::CString::new(arg.name.as_str()).unwrap())
             .collect();
-
         let mut p_argv: Vec<_> = cstr_argv
             .iter() // do NOT into_iter()
             .map(|arg| arg.as_ptr())
             .collect();
         p_argv.push(std::ptr::null());
-
-        let p: *const *const kclvm_char_t = p_argv.as_ptr();
-        let option_keys = p;
-
+        let option_keys = p_argv.as_ptr();
+        // CLI configs option values
         let cstr_argv: Vec<_> = args
             .args
             .iter()
             .map(|arg| std::ffi::CString::new(arg.value.as_str()).unwrap())
             .collect();
-
         let mut p_argv: Vec<_> = cstr_argv
             .iter() // do NOT into_iter()
             .map(|arg| arg.as_ptr())
             .collect();
         p_argv.push(std::ptr::null());
+        let option_values = p_argv.as_ptr();
+        // path selectors
+        let cstr_argv: Vec<_> = args
+            .path_selector
+            .iter()
+            .map(|arg| std::ffi::CString::new(arg.as_str()).unwrap())
+            .collect();
+        let mut p_argv: Vec<_> = cstr_argv
+            .iter() // do NOT into_iter()
+            .map(|arg| arg.as_ptr())
+            .collect();
+        p_argv.push(std::ptr::null());
+        let path_selector = p_argv.as_ptr();
 
-        let p: *const *const kclvm_char_t = p_argv.as_ptr();
-        let option_values = p;
-        let strict_range_check = args.strict_range_check as i32;
-        let disable_none = args.disable_none as i32;
-        let disable_schema_check = 0; // todo
-        let list_option_mode = 0; // todo
-        let debug_mode = args.debug;
-
-        // Exec json result
-        let mut json_result = vec![0u8; RESULT_SIZE];
-        let mut result_buffer_len = json_result.len() as i32 - 1;
-        let json_result_buffer = json_result.as_mut_ptr() as *mut i8;
-
-        // Exec warning data
-        let mut warn_data = vec![0u8; RESULT_SIZE];
-        let mut warn_buffer_len = warn_data.len() as i32 - 1;
-        let warn_buffer = warn_data.as_mut_ptr() as *mut i8;
-
-        // Exec log data
-        let mut log_data = vec![0u8; RESULT_SIZE];
-        let mut log_buffer_len = log_data.len() as i32 - 1;
-        let log_buffer = log_data.as_mut_ptr() as *mut i8;
-
-        let n = kcl_run(
+        let opts = FFIRunOptions {
+            strict_range_check: args.strict_range_check as i32,
+            disable_none: args.disable_none as i32,
+            disable_schema_check: 0,
+            disable_empty_list: 0,
+            sort_keys: args.sort_keys as i32,
+            show_hidden: args.show_hidden as i32,
+            debug_mode: args.debug,
+            include_schema_type_path: args.include_schema_type_path as i32,
+        };
+        let mut json_buffer = Buffer::make();
+        let mut yaml_buffer = Buffer::make();
+        let mut log_buffer = Buffer::make();
+        let mut err_buffer = Buffer::make();
+        // Input the main function, options and return the exec result
+        // including JSON and YAML result, log message and error message.
+        kcl_run(
             kclvm_main_ptr,
             option_len,
             option_keys,
             option_values,
-            strict_range_check,
-            disable_none,
-            disable_schema_check,
-            list_option_mode,
-            debug_mode,
-            &mut result_buffer_len,
-            json_result_buffer,
-            &mut warn_buffer_len,
-            warn_buffer,
-            &mut log_buffer_len,
-            log_buffer,
+            opts,
+            path_selector,
+            json_buffer.mut_len(),
+            json_buffer.mut_ptr(),
+            yaml_buffer.mut_len(),
+            yaml_buffer.mut_ptr(),
+            err_buffer.mut_len(),
+            err_buffer.mut_ptr(),
+            log_buffer.mut_len(),
+            log_buffer.mut_ptr(),
         );
+        // Convert runtime result to ExecProgramResult
         let mut result = ExecProgramResult {
-            log_message: String::from_utf8(log_data[0..log_buffer_len as usize].to_vec())?,
-            ..Default::default()
+            yaml_result: yaml_buffer.to_string()?,
+            json_result: json_buffer.to_string()?,
+            log_message: log_buffer.to_string()?,
+            err_message: err_buffer.to_string()?,
         };
-        if n > 0 {
-            let s = std::str::from_utf8(&json_result[0..n as usize])?;
-            match wrap_msg_in_result(s) {
-                Ok(json) => result.json_result = json,
-                Err(err) => result.err_message = err,
-            }
-        } else if n < 0 {
-            let return_len = 0 - n;
-            result.err_message = String::from_utf8(warn_data[0..return_len as usize].to_vec())?;
-        }
-
-        // Wrap runtime error into diagnostic style string.
-        if !result.err_message.is_empty() {
+        // Wrap runtime JSON Panic error string into diagnostic style string.
+        if !result.err_message.is_empty() && std::env::var(KCL_DEBUG_ERROR_ENV_VAR).is_err() {
             result.err_message = match Handler::default()
                 .add_diagnostic(<PanicInfo as Into<Diagnostic>>::into(PanicInfo::from(
                     result.err_message.as_str(),
@@ -419,24 +456,150 @@ impl KclLibRunner {
                 Err(err) => err.to_string(),
             };
         }
-
         Ok(result)
     }
 }
 
-fn wrap_msg_in_result(msg: &str) -> Result<String, String> {
-    let mut ctx = Context::new();
-    // YAML is compatible with JSON. We can use YAML library for result parsing.
-    let kcl_val = match ValueRef::from_yaml_stream(&mut ctx, msg) {
-        Ok(msg) => msg,
-        Err(err) => {
-            return Err(err.to_string());
-        }
-    };
-    if let Some(val) = kcl_val.get_by_key("__kcl_PanicInfo__") {
-        if val.is_truthy() {
-            return Err(msg.to_string());
+thread_local! {
+    static KCL_RUNTIME_PANIC_RECORD: RefCell<RuntimePanicRecord>  = RefCell::new(RuntimePanicRecord::default())
+}
+
+pub struct FastRunner {
+    opts: RunnerOptions,
+}
+
+impl FastRunner {
+    /// New a runner using the lib path and options.
+    pub fn new(opts: Option<RunnerOptions>) -> Self {
+        Self {
+            opts: opts.unwrap_or_default(),
         }
     }
-    Ok(msg.to_string())
+
+    /// Run kcl library with exec arguments.
+    pub fn run(&self, program: &ast::Program, args: &ExecProgramArgs) -> Result<ExecProgramResult> {
+        let ctx = Rc::new(RefCell::new(args_to_ctx(program, args)));
+        let evaluator = Evaluator::new_with_runtime_ctx(program, ctx.clone());
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|info: &std::panic::PanicInfo| {
+            KCL_RUNTIME_PANIC_RECORD.with(|record| {
+                let mut record = record.borrow_mut();
+                record.kcl_panic_info = true;
+                record.message = if let Some(s) = info.payload().downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = info.payload().downcast_ref::<&String>() {
+                    (*s).clone()
+                } else if let Some(s) = info.payload().downcast_ref::<String>() {
+                    (*s).clone()
+                } else {
+                    "".to_string()
+                };
+                if let Some(location) = info.location() {
+                    record.rust_file = location.file().to_string();
+                    record.rust_line = location.line() as i32;
+                    record.rust_col = location.column() as i32;
+                }
+            })
+        }));
+        let evaluator_result = std::panic::catch_unwind(|| {
+            if self.opts.plugin_agent_ptr > 0 {
+                #[cfg(not(target_arch = "wasm32"))]
+                unsafe {
+                    let plugin_method: extern "C" fn(
+                        method: *const i8,
+                        args: *const c_char,
+                        kwargs: *const c_char,
+                    ) -> *const c_char = std::mem::transmute(self.opts.plugin_agent_ptr);
+                    kclvm_plugin_init(plugin_method);
+                }
+            }
+            evaluator.run()
+        });
+        std::panic::set_hook(prev_hook);
+        KCL_RUNTIME_PANIC_RECORD.with(|record| {
+            let record = record.borrow();
+            ctx.borrow_mut().set_panic_info(&record);
+        });
+        let mut result = ExecProgramResult {
+            log_message: ctx.borrow().log_message.clone(),
+            ..Default::default()
+        };
+        let is_err = evaluator_result.is_err();
+        match evaluator_result {
+            Ok(r) => match r {
+                Ok((json, yaml)) => {
+                    result.json_result = json;
+                    result.yaml_result = yaml;
+                }
+                Err(err) => {
+                    result.err_message = err.to_string();
+                }
+            },
+            Err(err) => {
+                result.err_message = if is_err {
+                    ctx.borrow()
+                        .get_panic_info_json_string()
+                        .unwrap_or_default()
+                } else {
+                    kclvm_error::err_to_str(err)
+                };
+            }
+        }
+        // Wrap runtime JSON Panic error string into diagnostic style string.
+        if !result.err_message.is_empty() && std::env::var(KCL_DEBUG_ERROR_ENV_VAR).is_err() {
+            result.err_message = match Handler::default()
+                .add_diagnostic(<PanicInfo as Into<Diagnostic>>::into(PanicInfo::from(
+                    result.err_message.as_str(),
+                )))
+                .emit_to_string()
+            {
+                Ok(msg) => msg,
+                Err(err) => err.to_string(),
+            };
+        }
+        Ok(result)
+    }
+}
+
+pub(crate) fn args_to_ctx(program: &ast::Program, args: &ExecProgramArgs) -> Context {
+    let mut ctx = Context::new();
+    ctx.cfg.strict_range_check = args.strict_range_check;
+    ctx.cfg.debug_mode = args.debug != 0;
+    ctx.plan_opts.disable_none = args.disable_none;
+    ctx.plan_opts.show_hidden = args.show_hidden;
+    ctx.plan_opts.sort_keys = args.sort_keys;
+    ctx.plan_opts.include_schema_type_path = args.include_schema_type_path;
+    ctx.plan_opts.query_paths = args.path_selector.clone();
+    for arg in &args.args {
+        ctx.builtin_option_init(&arg.name, &arg.value);
+    }
+    ctx.set_kcl_workdir(&args.work_dir.clone().unwrap_or_default());
+    ctx.set_kcl_module_path(&program.root);
+    ctx
+}
+
+#[repr(C)]
+pub struct Buffer(Vec<u8>, i32);
+
+impl Buffer {
+    #[inline]
+    pub fn make() -> Self {
+        let buffer = vec![0u8; RESULT_SIZE];
+        Self(buffer, RESULT_SIZE as i32 - 1)
+    }
+
+    #[inline]
+    pub fn to_string(&self) -> anyhow::Result<String> {
+        Ok(String::from_utf8(self.0[0..self.1 as usize].to_vec())?)
+    }
+
+    #[inline]
+    pub fn mut_ptr(&mut self) -> *mut c_char {
+        self.0.as_mut_ptr() as *mut c_char
+    }
+
+    #[inline]
+    pub fn mut_len(&mut self) -> &mut i32 {
+        &mut self.1
+    }
 }

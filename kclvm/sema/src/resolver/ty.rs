@@ -76,7 +76,8 @@ impl<'ctx> Resolver<'ctx> {
             &ret_ty.into_type_annotation_str(),
         );
         if let Some(ty) = ty_node {
-            self.node_ty_map.insert(ty.id.clone(), ret_ty.clone());
+            self.node_ty_map
+                .insert(self.get_node_key(ty.id.clone()), ret_ty.clone());
         };
         ret_ty
     }
@@ -137,7 +138,7 @@ impl<'ctx> Resolver<'ctx> {
         assign_stmt: &kclvm_ast::ast::AssignStmt,
         value_ty: TypeRef,
     ) {
-        if assign_stmt.type_annotation.is_none() {
+        if assign_stmt.ty.is_none() {
             return;
         }
         for target in &assign_stmt.targets {
@@ -236,7 +237,7 @@ impl<'ctx> Resolver<'ctx> {
         range: &Range,
     ) -> bool {
         if let Some(index_signature) = &schema_ty.index_signature {
-            if !assignable_to(val_ty.clone(), index_signature.val_ty.clone()) {
+            if !self.check_type(val_ty.clone(), index_signature.val_ty.clone(), range) {
                 self.handler.add_type_error(
                     &format!(
                         "expected schema index signature value type {}, got {}",
@@ -247,8 +248,8 @@ impl<'ctx> Resolver<'ctx> {
                 );
             }
             if index_signature.any_other {
-                return assignable_to(key_ty, index_signature.key_ty.clone())
-                    && assignable_to(val_ty, index_signature.val_ty.clone());
+                return self.check_type(key_ty, index_signature.key_ty.clone(), range)
+                    && self.check_type(val_ty, index_signature.val_ty.clone(), range);
             }
             true
         } else {
@@ -367,11 +368,12 @@ impl<'ctx> Resolver<'ctx> {
                 if let Some(ty_node) = ty_node {
                     if let ast::Type::Named(identifier) = &ty_node.node {
                         for (index, name) in identifier.names.iter().enumerate() {
-                            self.node_ty_map.insert(name.id.clone(), tys[index].clone());
+                            self.node_ty_map
+                                .insert(self.get_node_key(name.id.clone()), tys[index].clone());
                         }
                         let ident_ty = tys.last().unwrap().clone();
                         self.node_ty_map
-                            .insert(ty_node.id.clone(), ident_ty.clone());
+                            .insert(self.get_node_key(ty_node.id.clone()), ident_ty.clone());
                     }
                 };
                 tys.last().unwrap().clone()

@@ -34,17 +34,17 @@
                         └─────────────────────┘
 */
 
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexSet;
 use kclvm_error::Position;
 
 use crate::{
     core::{
         global_state::GlobalState,
         package::ModuleInfo,
-        scope::{LocalSymbolScope, RootSymbolScope, ScopeKind, ScopeRef},
+        scope::{LocalSymbolScope, LocalSymbolScopeKind, RootSymbolScope, ScopeKind, ScopeRef},
         symbol::SymbolRef,
     },
-    ty::TypeRef,
+    resolver::scope::{NodeKey, NodeTyMap},
 };
 
 use kclvm_ast::ast::AstIndex;
@@ -65,7 +65,7 @@ pub struct AdvancedResolver<'ctx> {
 
 pub struct Context<'ctx> {
     pub program: &'ctx Program,
-    node_ty_map: IndexMap<AstIndex, TypeRef>,
+    node_ty_map: NodeTyMap,
     scopes: Vec<ScopeRef>,
     current_pkgpath: Option<String>,
     current_filename: Option<String>,
@@ -75,17 +75,26 @@ pub struct Context<'ctx> {
     cur_node: AstIndex,
 
     // whether the identifier currently being visited may be a definition
-    // it will only be true when visiting a lvalue or parameter,
+    // it will only be true when visiting a l-value or parameter,
     // which means advanced resolver will will create the corresponding
-    // ValueSymbol instead of an UnresolveSymbol
+    // ValueSymbol instead of an UnresolvedSymbol
     maybe_def: bool,
+}
+
+impl<'ctx> Context<'ctx> {
+    pub fn get_node_key(&self, id: &AstIndex) -> NodeKey {
+        NodeKey {
+            pkgpath: self.current_pkgpath.clone().unwrap(),
+            id: id.clone(),
+        }
+    }
 }
 
 impl<'ctx> AdvancedResolver<'ctx> {
     pub fn resolve_program(
         program: &'ctx Program,
         gs: GlobalState,
-        node_ty_map: IndexMap<AstIndex, TypeRef>,
+        node_ty_map: NodeTyMap,
     ) -> GlobalState {
         let mut advanced_resolver = Self {
             gs,
@@ -146,9 +155,15 @@ impl<'ctx> AdvancedResolver<'ctx> {
         self.ctx.scopes.push(scope_ref);
     }
 
-    fn enter_local_scope(&mut self, filepath: &str, start: Position, end: Position) {
+    fn enter_local_scope(
+        &mut self,
+        filepath: &str,
+        start: Position,
+        end: Position,
+        kind: LocalSymbolScopeKind,
+    ) {
         let parent = *self.ctx.scopes.last().unwrap();
-        let local_scope = LocalSymbolScope::new(parent, start, end);
+        let local_scope = LocalSymbolScope::new(parent, start, end, kind);
         let scope_ref = self.gs.get_scopes_mut().alloc_local_scope(local_scope);
 
         match parent.get_kind() {
@@ -272,10 +287,22 @@ mod tests {
         let path = "src/advanced_resolver/test_data/schema_symbols.k"
             .to_string()
             .replace("/", &std::path::MAIN_SEPARATOR.to_string());
-        let mut program = load_program(sess.clone(), &[&path], None, None).unwrap();
+        let mut program = load_program(sess.clone(), &[&path], None, None)
+            .unwrap()
+            .program;
         let gs = GlobalState::default();
         let gs = Namer::find_symbols(&program, gs);
-        let node_ty_map = resolver::resolve_program(&mut program).node_ty_map;
+
+        let node_ty_map = resolver::resolve_program_with_opts(
+            &mut program,
+            resolver::Options {
+                merge_program: false,
+                type_erasure: false,
+                ..Default::default()
+            },
+            None,
+        )
+        .node_ty_map;
         let gs = AdvancedResolver::resolve_program(&program, gs, node_ty_map);
         let base_path = Path::new(".").canonicalize().unwrap();
         // print_symbols_info(&gs);
@@ -411,7 +438,7 @@ mod tests {
                 vec![
                     (
                         1,
-                        0,
+                        7,
                         1,
                         20,
                         "import_test.a".to_string(),
@@ -429,7 +456,7 @@ mod tests {
                     ),
                     (
                         2,
-                        0,
+                        7,
                         2,
                         20,
                         "import_test.b".to_string(),
@@ -447,7 +474,7 @@ mod tests {
                     ),
                     (
                         3,
-                        0,
+                        7,
                         3,
                         20,
                         "import_test.c".to_string(),
@@ -465,7 +492,7 @@ mod tests {
                     ),
                     (
                         4,
-                        0,
+                        7,
                         4,
                         20,
                         "import_test.d".to_string(),
@@ -483,7 +510,7 @@ mod tests {
                     ),
                     (
                         5,
-                        0,
+                        7,
                         5,
                         20,
                         "import_test.e".to_string(),
@@ -501,7 +528,7 @@ mod tests {
                     ),
                     (
                         6,
-                        0,
+                        24,
                         6,
                         25,
                         "import_test.f".to_string(),
@@ -517,7 +544,7 @@ mod tests {
                             .replace("/", &std::path::MAIN_SEPARATOR.to_string()),
                         SymbolKind::Package,
                     ),
-                    (7, 0, 7, 10, "pkg".to_string(), SymbolKind::Unresolved),
+                    (7, 7, 7, 10, "pkg".to_string(), SymbolKind::Unresolved),
                     (
                         0,
                         0,
@@ -528,7 +555,7 @@ mod tests {
                             .replace("/", &std::path::MAIN_SEPARATOR.to_string()),
                         SymbolKind::Package,
                     ),
-                    (8, 0, 8, 12, "regex".to_string(), SymbolKind::Unresolved),
+                    (8, 7, 8, 12, "regex".to_string(), SymbolKind::Unresolved),
                     (
                         1,
                         0,
@@ -1138,53 +1165,43 @@ mod tests {
                 vec![(1, 0, 1, 2, "_b".to_string(), SymbolKind::Value)],
             ),
         ];
+        let mut skip_def_info = false;
         for (filepath, symbols) in except_symbols.iter() {
             let abs_filepath = adjust_canonicalization(base_path.join(filepath));
-            let file_sema_info = gs.sema_db.file_sema_map.get(&abs_filepath).unwrap();
-
-            let mut def_count = 0;
-
             // symbols will be sorted according to their position in the file
             // now we check all symbols
-            for (index, symbol_ref) in file_sema_info.symbols.iter().enumerate() {
-                let symbol = gs.get_symbols().get_symbol(*symbol_ref).unwrap();
-                let (start, end) = symbol.get_range();
+            for (index, symbol_info) in symbols.iter().enumerate() {
+                if skip_def_info {
+                    skip_def_info = false;
+                    continue;
+                }
+                let (start_line, start_col, end_line, end_col, name, kind) = symbol_info;
                 if abs_filepath.is_empty() {
                     continue;
                 }
                 // test look up symbols
                 let inner_pos = Position {
                     filename: abs_filepath.clone(),
-                    line: (start.line + end.line) / 2,
-                    column: Some((start.column.unwrap_or(0) + end.column.unwrap_or(0)) / 2),
+                    line: (start_line + end_line) / 2,
+                    column: Some((start_col + end_col) / 2),
                 };
-                let looked_symbol = gs.look_up_exact_symbol(&inner_pos);
-                assert_eq!(looked_symbol, Some(*symbol_ref));
-                let out_pos = Position {
-                    filename: abs_filepath.clone(),
-                    line: (start.line + end.line) / 2 + 1,
-                    column: Some(end.column.unwrap_or(0) + 1),
-                };
-                let looked_symbol = gs.look_up_exact_symbol(&out_pos);
-                assert_ne!(looked_symbol, Some(*symbol_ref));
-
+                let looked_symbol_ref = gs.look_up_exact_symbol(&inner_pos).unwrap();
+                let looked_symbol = gs.get_symbols().get_symbol(looked_symbol_ref).unwrap();
+                let (start, end) = looked_symbol.get_range();
                 // test symbol basic infomation
-                let (start_line, start_col, end_line, end_col, name, kind) =
-                    symbols.get(index + def_count).unwrap();
                 assert_eq!(start.filename, abs_filepath);
                 assert_eq!(start.line, *start_line);
                 assert_eq!(start.column.unwrap_or(0), *start_col);
                 assert_eq!(end.line, *end_line);
                 assert_eq!(end.column.unwrap_or(0), *end_col);
-                assert_eq!(*name, symbol.get_name());
-                assert_eq!(symbol_ref.get_kind(), *kind);
+                assert_eq!(*name, looked_symbol.get_name());
+                assert_eq!(looked_symbol_ref.get_kind(), *kind);
 
                 // test find def
-                if SymbolKind::Unresolved == symbol_ref.get_kind() {
-                    def_count = def_count + 1;
+                if SymbolKind::Unresolved == looked_symbol_ref.get_kind() {
                     let (start_line, start_col, end_line, end_col, path, kind) =
-                        symbols.get(index + def_count).unwrap();
-                    let def_ref = symbol.get_definition().unwrap();
+                        symbols.get(index + 1).unwrap();
+                    let def_ref = looked_symbol.get_definition().unwrap();
                     let def = gs.get_symbols().get_symbol(def_ref).unwrap();
                     let (start, end) = def.get_range();
                     let def_filepath = adjust_canonicalization(base_path.join(path));
@@ -1196,6 +1213,7 @@ mod tests {
                         assert_eq!(start.filename, def_filepath);
                     }
                     assert_eq!(def_ref.get_kind(), *kind);
+                    skip_def_info = true;
                 }
             }
         }
@@ -1208,7 +1226,9 @@ mod tests {
         let path = "src/advanced_resolver/test_data/schema_symbols.k"
             .to_string()
             .replace("/", &std::path::MAIN_SEPARATOR.to_string());
-        let mut program = load_program(sess.clone(), &[&path], None, None).unwrap();
+        let mut program = load_program(sess.clone(), &[&path], None, None)
+            .unwrap()
+            .program;
         let gs = GlobalState::default();
         let gs = Namer::find_symbols(&program, gs);
         let node_ty_map = resolver::resolve_program(&mut program).node_ty_map;
@@ -1283,7 +1303,9 @@ mod tests {
         let path = "src/advanced_resolver/test_data/schema_symbols.k"
             .to_string()
             .replace("/", &std::path::MAIN_SEPARATOR.to_string());
-        let mut program = load_program(sess.clone(), &[&path], None, None).unwrap();
+        let mut program = load_program(sess.clone(), &[&path], None, None)
+            .unwrap()
+            .program;
         let gs = GlobalState::default();
         let gs = Namer::find_symbols(&program, gs);
         let node_ty_map = resolver::resolve_program(&mut program).node_ty_map;
@@ -1306,7 +1328,16 @@ mod tests {
                     .to_string()
                     .replace("/", &std::path::MAIN_SEPARATOR.to_string()),
                 30,
-                41,
+                6,
+                6,
+            ),
+            // __main__.Main schema config entry value scope
+            (
+                "src/advanced_resolver/test_data/schema_symbols.k"
+                    .to_string()
+                    .replace("/", &std::path::MAIN_SEPARATOR.to_string()),
+                30,
+                20,
                 10,
             ),
             // pkg.Person schema expr scope
@@ -1316,6 +1347,15 @@ mod tests {
                     .replace("/", &std::path::MAIN_SEPARATOR.to_string()),
                 33,
                 21,
+                1,
+            ),
+            // pkg.Person schema config entry value scope
+            (
+                "src/advanced_resolver/test_data/schema_symbols.k"
+                    .to_string()
+                    .replace("/", &std::path::MAIN_SEPARATOR.to_string()),
+                34,
+                17,
                 6,
             ),
             // __main__ package scope
@@ -1343,6 +1383,15 @@ mod tests {
                     .replace("/", &std::path::MAIN_SEPARATOR.to_string()),
                 12,
                 5,
+                2,
+            ),
+            // import_test.a.Name config entry value scope
+            (
+                "src/advanced_resolver/test_data/import_test/a.k"
+                    .to_string()
+                    .replace("/", &std::path::MAIN_SEPARATOR.to_string()),
+                12,
+                21,
                 8,
             ),
         ];

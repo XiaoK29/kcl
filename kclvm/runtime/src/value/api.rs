@@ -1,12 +1,17 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
 #![allow(clippy::missing_safety_doc)]
 
-use std::mem::transmute_copy;
+use std::{mem::transmute_copy, os::raw::c_char};
 
 use crate::*;
 
+use self::{eval::LazyEvalScope, walker::walk_value_mut};
+
 #[allow(non_camel_case_types)]
 pub type kclvm_context_t = Context;
+
+#[allow(non_camel_case_types)]
+pub type kclvm_eval_scope_t = LazyEvalScope;
 
 #[allow(non_camel_case_types)]
 pub type kclvm_decorator_value_t = DecoratorValue;
@@ -24,7 +29,7 @@ pub type kclvm_value_ref_t = ValueRef;
 pub type kclvm_iterator_t = ValueIterator;
 
 #[allow(non_camel_case_types)]
-pub type kclvm_char_t = i8;
+pub type kclvm_char_t = c_char;
 
 #[allow(non_camel_case_types)]
 pub type kclvm_size_t = i32;
@@ -75,12 +80,6 @@ static mut kclvm_value_Bool_true_obj: usize = 0;
 
 #[allow(non_camel_case_types, non_upper_case_globals)]
 static mut kclvm_value_Bool_false_obj: usize = 0;
-
-#[allow(non_camel_case_types, non_upper_case_globals)]
-static mut kclvm_value_Int_0_obj: usize = 0;
-
-#[allow(non_camel_case_types, non_upper_case_globals)]
-static mut kclvm_value_Float_0_obj: usize = 0;
 
 // Undefine/None
 
@@ -143,14 +142,6 @@ pub extern "C" fn kclvm_value_Int(
     v: kclvm_int_t,
 ) -> *mut kclvm_value_ref_t {
     let ctx = mut_ptr_as_ref(ctx);
-    if v == 0 {
-        unsafe {
-            if kclvm_value_Int_0_obj == 0 {
-                kclvm_value_Int_0_obj = new_mut_ptr(ctx, ValueRef::int(0)) as usize;
-            }
-            return kclvm_value_Int_0_obj as *mut kclvm_value_ref_t;
-        }
-    }
     new_mut_ptr(ctx, ValueRef::int(v))
 }
 
@@ -161,14 +152,6 @@ pub extern "C" fn kclvm_value_Float(
     v: kclvm_float_t,
 ) -> *mut kclvm_value_ref_t {
     let ctx = mut_ptr_as_ref(ctx);
-    if v == 0.0 {
-        unsafe {
-            if kclvm_value_Float_0_obj == 0 {
-                kclvm_value_Float_0_obj = new_mut_ptr(ctx, ValueRef::float(0.0)) as usize;
-            }
-            return kclvm_value_Float_0_obj as *mut kclvm_value_ref_t;
-        }
-    }
     new_mut_ptr(ctx, ValueRef::float(v))
 }
 
@@ -193,7 +176,7 @@ pub unsafe extern "C" fn kclvm_value_Str(
 ) -> *mut kclvm_value_ref_t {
     let ctx = mut_ptr_as_ref(ctx);
     unsafe {
-        if v.is_null() || *v == '\0' as i8 {
+        if v.is_null() || *v == '\0' as c_char {
             return new_mut_ptr(ctx, ValueRef::str(""));
         }
     }
@@ -278,19 +261,15 @@ pub unsafe extern "C" fn kclvm_value_schema_with_config(
     record_instance: *const kclvm_value_ref_t,
     instance_pkgpath: *const kclvm_value_ref_t,
     optional_mapping: *const kclvm_value_ref_t,
+    args: *const kclvm_value_ref_t,
+    kwargs: *const kclvm_value_ref_t,
 ) -> *mut kclvm_value_ref_t {
     let ctx = mut_ptr_as_ref(ctx);
     let schema_dict = ptr_as_ref(schema_dict);
     // Config dict
     let config = ptr_as_ref(config);
     let config_meta = ptr_as_ref(config_meta);
-    let config_keys: Vec<String> = config
-        .as_dict_ref()
-        .values
-        .keys()
-        .into_iter()
-        .cloned()
-        .collect();
+    let config_keys: Vec<String> = config.as_dict_ref().values.keys().cloned().collect();
     // Schema meta
     let name = c2str(name);
     let pkgpath = c2str(pkgpath);
@@ -300,17 +279,29 @@ pub unsafe extern "C" fn kclvm_value_schema_with_config(
     let instance_pkgpath = ptr_as_ref(instance_pkgpath);
     let instance_pkgpath = instance_pkgpath.as_str();
     let optional_mapping = ptr_as_ref(optional_mapping);
-    let schema =
-        schema_dict.dict_to_schema(name, pkgpath, &config_keys, config_meta, optional_mapping);
-    if record_instance.is_truthy()
-        && (instance_pkgpath.is_empty() || instance_pkgpath == MAIN_PKG_PATH)
-    {
+    let args = ptr_as_ref(args);
+    let kwargs = ptr_as_ref(kwargs);
+    let schema = schema_dict.dict_to_schema(
+        name,
+        pkgpath,
+        &config_keys,
+        config_meta,
+        optional_mapping,
+        Some(args.clone()),
+        Some(kwargs.clone()),
+    );
+    if record_instance.is_truthy() {
         // Record schema instance in the context
         if !ctx.instances.contains_key(&runtime_type) {
-            ctx.instances.insert(runtime_type.clone(), vec![]);
+            ctx.instances
+                .insert(runtime_type.clone(), IndexMap::default());
         }
-        ctx.instances
-            .get_mut(&runtime_type)
+        let pkg_instance_map = ctx.instances.get_mut(&runtime_type).unwrap();
+        if !pkg_instance_map.contains_key(&instance_pkgpath) {
+            pkg_instance_map.insert(instance_pkgpath.clone(), vec![]);
+        }
+        pkg_instance_map
+            .get_mut(&instance_pkgpath)
             .unwrap()
             .push(schema_dict.clone());
     }
@@ -456,7 +447,7 @@ pub unsafe extern "C" fn kclvm_value_to_json_value(
     let p = ptr_as_ref(p);
     let s = p.to_json_string();
     let ctx = mut_ptr_as_ref(ctx);
-    return new_mut_ptr(ctx, ValueRef::str(s.as_ref()));
+    new_mut_ptr(ctx, ValueRef::str(s.as_ref()))
 }
 
 #[no_mangle]
@@ -472,7 +463,7 @@ pub unsafe extern "C" fn kclvm_value_to_json_value_with_null(
     let p = ptr_as_ref(p);
     let s = p.to_json_string_with_null();
     let ctx = mut_ptr_as_ref(ctx);
-    return new_mut_ptr(ctx, ValueRef::str(s.as_ref()));
+    new_mut_ptr(ctx, ValueRef::str(s.as_ref()))
 }
 
 #[no_mangle]
@@ -482,10 +473,15 @@ pub unsafe extern "C" fn kclvm_value_plan_to_json(
     p: *const kclvm_value_ref_t,
 ) -> *mut kclvm_value_ref_t {
     let p = ptr_as_ref(p);
-    let ctx = mut_ptr_as_ref(ctx);
-    let s = p.plan_to_json_string(ctx);
-
-    return new_mut_ptr(ctx, ValueRef::str(s.as_ref()));
+    let ctx: &mut Context = mut_ptr_as_ref(ctx);
+    let value = match ctx.buffer.custom_manifests_output.clone() {
+        Some(output) => ValueRef::from_yaml_stream(ctx, &output).unwrap(),
+        None => p.clone(),
+    };
+    let (json_string, yaml_string) = value.plan(ctx);
+    ctx.json_result = json_string.clone();
+    ctx.yaml_result = yaml_string.clone();
+    new_mut_ptr(ctx, ValueRef::str(&json_string))
 }
 
 #[no_mangle]
@@ -496,9 +492,14 @@ pub unsafe extern "C" fn kclvm_value_plan_to_yaml(
 ) -> *mut kclvm_value_ref_t {
     let p = ptr_as_ref(p);
     let ctx = mut_ptr_as_ref(ctx);
-    let s = p.plan_to_yaml_string(ctx);
-
-    return new_mut_ptr(ctx, ValueRef::str(s.as_ref()));
+    let value = match ctx.buffer.custom_manifests_output.clone() {
+        Some(output) => ValueRef::from_yaml_stream(ctx, &output).unwrap(),
+        None => p.clone(),
+    };
+    let (json_string, yaml_string) = value.plan(ctx);
+    ctx.json_result = json_string.clone();
+    ctx.yaml_result = yaml_string.clone();
+    new_mut_ptr(ctx, ValueRef::str(&yaml_string))
 }
 
 #[no_mangle]
@@ -514,7 +515,7 @@ pub unsafe extern "C" fn kclvm_value_to_yaml_value(
     let p = ptr_as_ref(p);
     let s = p.to_yaml_string();
 
-    return new_mut_ptr(ctx, ValueRef::str(s.as_ref()));
+    new_mut_ptr(ctx, ValueRef::str(s.as_ref()))
 }
 
 #[no_mangle]
@@ -531,7 +532,7 @@ pub unsafe extern "C" fn kclvm_value_to_str_value(
     let p = ptr_as_ref(p);
     let s = p.to_string();
 
-    return new_mut_ptr(ctx, ValueRef::str(s.as_ref()));
+    new_mut_ptr(ctx, ValueRef::str(s.as_ref()))
 }
 
 // ----------------------------------------------------------------------------
@@ -543,7 +544,7 @@ pub unsafe extern "C" fn kclvm_value_to_str_value(
 pub unsafe extern "C" fn kclvm_value_Str_ptr(p: *const kclvm_value_ref_t) -> *const kclvm_char_t {
     let p = ptr_as_ref(p);
     match &*p.rc.borrow() {
-        Value::str_value(ref v) => v.as_ptr() as *const i8,
+        Value::str_value(ref v) => v.as_ptr() as *const c_char,
         _ => std::ptr::null(),
     }
 }
@@ -629,7 +630,7 @@ pub unsafe extern "C" fn kclvm_value_function_invoke(
             // Normal kcl function, call directly
             } else if func.is_external {
                 let name = format!("{}\0", func.name);
-                kclvm_plugin_invoke(ctx, name.as_ptr() as *const i8, args, kwargs)
+                kclvm_plugin_invoke(ctx, name.as_ptr() as *const c_char, args, kwargs)
             } else {
                 args_ref.list_append_unpack_first(closure);
                 let args = args_ref.clone().into_raw(ctx_ref);
@@ -686,12 +687,6 @@ pub unsafe extern "C" fn kclvm_value_delete(p: *mut kclvm_value_ref_t) {
             return;
         }
         if p as usize == kclvm_value_Bool_false_obj {
-            return;
-        }
-        if p as usize == kclvm_value_Int_0_obj {
-            return;
-        }
-        if p as usize == kclvm_value_Float_0_obj {
             return;
         }
     }
@@ -1086,18 +1081,23 @@ pub unsafe extern "C" fn kclvm_dict_set_value(
     let val = ptr_as_ref(val);
     if p.is_config() {
         p.dict_update_key_value(key, val.clone());
-    }
-    if p.is_schema() {
-        let schema: ValueRef;
-        {
-            let schema_value = p.as_schema();
-            let mut config_keys = schema_value.config_keys.clone();
-            config_keys.push(key.to_string());
-            schema = resolve_schema(mut_ptr_as_ref(ctx), p, &config_keys);
+        if p.is_schema() {
+            let schema: ValueRef;
+            {
+                let schema_value = p.as_schema();
+                let mut config_keys = schema_value.config_keys.clone();
+                config_keys.push(key.to_string());
+                schema = resolve_schema(mut_ptr_as_ref(ctx), p, &config_keys);
+            }
+            p.schema_update_with_schema(&schema);
         }
-        p.schema_update_with_schema(&schema);
+    } else {
+        panic!(
+            "failed to update the dict. An iterable of key-value pairs was expected, but got {}. Check if the syntax for updating the dictionary with the attribute '{}' is correct",
+            p.type_str(),
+            key
+        );
     }
-    /*panic*/
 }
 
 #[no_mangle]
@@ -1937,81 +1937,8 @@ pub unsafe extern "C" fn kclvm_value_load_attr(
 ) -> *const kclvm_value_ref_t {
     let p = ptr_as_ref(obj);
     let key = c2str(key);
-    let ctx_ref = mut_ptr_as_ref(ctx);
-    // load_attr including str/dict/schema.
-    if p.is_dict() {
-        match p.dict_get_value(key) {
-            Some(x) => {
-                return x.into_raw(ctx_ref);
-            }
-            None => {
-                return kclvm_value_Undefined(ctx);
-            }
-        }
-    } else if p.is_schema() {
-        let dict = p.schema_to_dict();
-        match dict.dict_get_value(key) {
-            Some(x) => {
-                return x.into_raw(ctx_ref);
-            }
-            None => panic!("schema '{}' attribute '{}' not found", p.type_str(), key),
-        }
-    } else if p.is_str() {
-        let function = match key {
-            "lower" => kclvm_builtin_str_lower,
-            "upper" => kclvm_builtin_str_upper,
-            "capitalize" => kclvm_builtin_str_capitalize,
-            "count" => kclvm_builtin_str_count,
-            "endswith" => kclvm_builtin_str_endswith,
-            "find" => kclvm_builtin_str_find,
-            "format" => kclvm_builtin_str_format,
-            "index" => kclvm_builtin_str_index,
-            "isalnum" => kclvm_builtin_str_isalnum,
-            "isalpha" => kclvm_builtin_str_isalpha,
-            "isdigit" => kclvm_builtin_str_isdigit,
-            "islower" => kclvm_builtin_str_islower,
-            "isspace" => kclvm_builtin_str_isspace,
-            "istitle" => kclvm_builtin_str_istitle,
-            "isupper" => kclvm_builtin_str_isupper,
-            "join" => kclvm_builtin_str_join,
-            "lstrip" => kclvm_builtin_str_lstrip,
-            "rstrip" => kclvm_builtin_str_rstrip,
-            "replace" => kclvm_builtin_str_replace,
-            "removeprefix" => kclvm_builtin_str_removeprefix,
-            "removesuffix" => kclvm_builtin_str_removesuffix,
-            "rfind" => kclvm_builtin_str_rfind,
-            "rindex" => kclvm_builtin_str_rindex,
-            "rsplit" => kclvm_builtin_str_rsplit,
-            "split" => kclvm_builtin_str_split,
-            "splitlines" => kclvm_builtin_str_splitlines,
-            "startswith" => kclvm_builtin_str_startswith,
-            "strip" => kclvm_builtin_str_strip,
-            "title" => kclvm_builtin_str_title,
-            _ => panic!("str object attr '{key}' not found"),
-        };
-        let closure = ValueRef::list(Some(&[p]));
-        return new_mut_ptr(
-            ctx_ref,
-            ValueRef::func(function as usize as u64, 0, closure, "", "", false),
-        );
-    }
-    // schema instance
-    else if p.is_func() {
-        let function = match key {
-            "instances" => kclvm_schema_instances,
-            _ => panic!("schema object attr '{key}' not found"),
-        };
-        let closure = ValueRef::list(Some(&[p]));
-        return new_mut_ptr(
-            ctx_ref,
-            ValueRef::func(function as usize as u64, 0, closure, "", "", false),
-        );
-    }
-    panic!(
-        "invalid value '{}' to load attribute '{}'",
-        p.type_str(),
-        key
-    );
+    let ctx = mut_ptr_as_ref(ctx);
+    p.load_attr(key).into_raw(ctx)
 }
 
 #[no_mangle]
@@ -2136,53 +2063,60 @@ pub unsafe extern "C" fn kclvm_schema_instances(
     let kwargs = ptr_as_ref(kwargs);
     if let Some(val) = args.pop_arg_first() {
         let function = val.as_function();
-        let main_pkg = args.arg_0().or_else(|| kwargs.kwarg("main_pkg"));
-        let main_pkg = if let Some(v) = main_pkg {
+        let full_pkg = args.arg_0().or_else(|| kwargs.kwarg("full_pkg"));
+        let full_pkg = if let Some(v) = full_pkg {
             v.is_truthy()
         } else {
-            true
+            false
         };
         let runtime_type = &function.runtime_type;
         if ctx_ref.instances.contains_key(runtime_type) {
             let mut list = ValueRef::list(None);
-            for v in ctx_ref.instances.get(runtime_type).unwrap() {
-                if v.is_schema() {
-                    let schema = v.as_schema();
-                    if main_pkg {
-                        if schema.pkgpath == MAIN_PKG_PATH {
-                            list.list_append(v)
-                        }
-                    } else {
-                        list.list_append(v)
-                    }
-                } else if v.is_dict() {
-                    let runtime_type_attr_path =
-                        format!("{SCHEMA_SETTINGS_ATTR_NAME}.{SETTINGS_SCHEMA_TYPE_KEY}");
-                    let runtime_type =
-                        if let Some(runtime_type) = v.get_by_path(&runtime_type_attr_path) {
-                            runtime_type.as_str()
-                        } else {
-                            runtime_type.to_string()
-                        };
-                    let names: Vec<&str> = runtime_type.rsplit('.').collect();
-                    let name = names[0];
-                    let pkgpath = names[1];
-                    let v = v.dict_to_schema(
-                        name,
-                        pkgpath,
-                        &[],
-                        &ValueRef::dict(None),
-                        &ValueRef::dict(None),
-                    );
-                    list.list_append(&v);
+            let instance_map = ctx_ref.instances.get(runtime_type).unwrap();
+            if full_pkg {
+                for (_, v_list) in instance_map {
+                    collect_schema_instances(&mut list, &v_list, runtime_type)
                 }
-            }
+            } else {
+                // Get the schema instances only located at the main package.
+                if let Some(v_list) = instance_map.get(MAIN_PKG_PATH) {
+                    collect_schema_instances(&mut list, &v_list, runtime_type)
+                }
+                if let Some(v_list) = instance_map.get("") {
+                    collect_schema_instances(&mut list, &v_list, runtime_type)
+                }
+            };
             list.into_raw(ctx_ref)
         } else {
             kclvm_value_List(ctx)
         }
     } else {
         kclvm_value_None(ctx)
+    }
+}
+
+fn collect_schema_instances(list: &mut ValueRef, v_list: &[ValueRef], runtime_type: &str) {
+    for v in v_list {
+        if v.is_schema() {
+            list.list_append(v)
+        } else if v.is_dict() {
+            let runtime_type = v
+                .get_potential_schema_type()
+                .unwrap_or(runtime_type.to_string());
+            let names: Vec<&str> = runtime_type.rsplit('.').collect();
+            let name = names[0];
+            let pkgpath = names[1];
+            let v = v.dict_to_schema(
+                name,
+                pkgpath,
+                &[],
+                &ValueRef::dict(None),
+                &ValueRef::dict(None),
+                None,
+                None,
+            );
+            list.list_append(&v);
+        }
     }
 }
 
@@ -2309,13 +2243,17 @@ pub unsafe extern "C" fn kclvm_schema_optional_check(
 #[runtime_fn]
 pub unsafe extern "C" fn kclvm_schema_default_settings(
     schema_value: *mut kclvm_value_ref_t,
-    config_value: *const kclvm_value_ref_t,
+    _config_value: *const kclvm_value_ref_t,
+    args: *const kclvm_value_ref_t,
+    kwargs: *const kclvm_value_ref_t,
     runtime_type: *const kclvm_char_t,
 ) {
     let schema_value = mut_ptr_as_ref(schema_value);
-    let config_value = ptr_as_ref(config_value);
+    let args = ptr_as_ref(args);
+    let kwargs = ptr_as_ref(kwargs);
     let runtime_type = c2str(runtime_type);
-    schema_value.schema_default_settings(config_value, runtime_type);
+    schema_value.set_potential_schema_type(runtime_type);
+    schema_value.set_schema_args(args, kwargs);
 }
 
 #[no_mangle]
@@ -2331,7 +2269,7 @@ pub unsafe extern "C" fn kclvm_schema_assert(
     let config_meta = ptr_as_ref(config_meta);
     if !value.is_truthy() {
         let ctx = mut_ptr_as_ref(ctx);
-        ctx.set_err_type(&ErrType::SchemaCheckFailure_TYPE);
+        ctx.set_err_type(&RuntimeErrorType::SchemaCheckFailure);
         if let Some(config_meta_file) = config_meta.get_by_key(CONFIG_META_FILENAME) {
             let config_meta_line = config_meta.get_by_key(CONFIG_META_LINE).unwrap();
             let config_meta_column = config_meta.get_by_key(CONFIG_META_COLUMN).unwrap();
@@ -2471,8 +2409,13 @@ pub unsafe extern "C" fn kclvm_convert_collection_value(
     let tpe = c2str(tpe);
     let value = type_pack_and_check(ctx, value, vec![tpe]);
     let is_in_schema = ptr_as_ref(is_in_schema);
-    if value.is_schema() && !is_in_schema.is_truthy() {
-        value.schema_check_attr_optional(ctx, true);
+    // Schema required attribute validating.
+    if !is_in_schema.is_truthy() {
+        walk_value_mut(&value, &mut |value: &ValueRef| {
+            if value.is_schema() {
+                value.schema_check_attr_optional(ctx, true);
+            }
+        })
     }
     value.into_raw(ctx)
 }

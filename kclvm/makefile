@@ -31,7 +31,7 @@ install-kclvm-py:
 # E2E compile and run
 run:
 	cd .. && make build && cd kclvm
-	kcl ../samples/hello.k
+	kclvm_cli run ../samples/hello.k
 
 # Cargo check all packages
 check:
@@ -49,19 +49,22 @@ lint:
 fix:
 	cargo clippy --fix --allow-dirty
 
+build-wasm:
+	cargo build --target=wasm32-wasi --release
+
 # ------------------------
 # Tests
 # ------------------------
 
 # Unit tests without code cov
 test:
-	cargo test -p kclvm-* -- --nocapture
+	cargo test --workspace -r --features llvm -- --nocapture
 
 # Unit tests with code cov (Requires rust 1.60+)
 codecov:
 	rustup component add llvm-tools-preview
 	cargo install cargo-llvm-cov
-	cargo llvm-cov --workspace --ignore-filename-regex gpyrpc.rs --html --open -- --nocapture
+	cargo llvm-cov --workspace --features llvm --ignore-filename-regex gpyrpc.rs --html --open -- --nocapture
 
 # Unit tests with code cov and output the lcov file (Requires rust 1.60+)
 codecov-lcov:
@@ -69,19 +72,23 @@ codecov-lcov:
 	cargo install cargo-llvm-cov
 	rm -rf $(PWD)/.kclvm_cov
 	mkdir $(PWD)/.kclvm_cov
-	cargo llvm-cov --lcov --output-path $(PWD)/.kclvm_cov/lcov.info --workspace --ignore-filename-regex gpyrpc.rs -- --nocapture
+	cargo llvm-cov --features llvm --lcov --output-path $(PWD)/.kclvm_cov/lcov.info -r --workspace --ignore-filename-regex gpyrpc.rs -- --nocapture
 
 # Test runtime libaries using python functions
 test-runtime: install-kclvm-py install-pytest
-	cd ./tests/test_units && PYTHONPATH=./../../plugin kclvm -m pytest -vv || { echo 'kclvm/tests/test_units failed' ; exit 1; }
+	cd ./tests/test_units && PYTHONPATH=./../../tests/test_units/runtime python3 -m pytest -vv || { echo 'kclvm/tests/test_units failed' ; exit 1; }
 
 # E2E grammar tests.
 test-grammar: install-kclvm-py install-pytest
-	cd tests/integration/grammar && kclvm -m pytest -v -n 5
+	cd tests/integration/grammar && python3 -m pytest -v -n 5
+
+# E2E grammar tests with the fast evaluator
+test-grammar-evaluator: install-kclvm-py install-pytest
+	cd tests/integration/grammar && KCL_FAST_EVAL=1 python3 -m pytest -v -n 5
 
 # E2E konfig tests.
 test-konfig: install-kclvm-py install-pytest
-	cd tests/integration/konfig && kclvm -m pytest -v -n 5
+	cd tests/integration/konfig && python3 -m pytest -v -n 5
 
 # Parser fuzz.
 fuzz-parser:

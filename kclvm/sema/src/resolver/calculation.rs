@@ -245,12 +245,11 @@ impl<'ctx> Resolver<'ctx> {
 
     /// Compare operator calculation table
     ///
-    /// bool            # False < True            False < True
-    /// int             # mathematical            1 < 2
-    /// float           # as defined by IEEE 754  1.0 < 2.0
-    /// string          # lexicographical         "1" < 2
-    /// list            # lexicographical         [1] == [2]
-    /// iterable        # 1 in [1, 2, 3], "s" in "ss", "key" in Schema
+    /// int                 # mathematical            1 < 2
+    /// float               # as defined by IEEE 754  1.0 < 2.0
+    /// list/config/schema  # lexicographical         [1] == [2]
+    /// iterable            # 1 in [1, 2, 3], "s" in "ss", "key" in Schema
+    /// relation            # a is True, b is Undefined
     pub fn compare(
         &mut self,
         left: TypeRef,
@@ -266,11 +265,11 @@ impl<'ctx> Resolver<'ctx> {
         if self
             .ctx
             .ty_ctx
-            .is_number_type_or_number_union_type(t1.clone())
+            .is_number_bool_type_or_number_bool_union_type(t1.clone())
             && self
                 .ctx
                 .ty_ctx
-                .is_number_type_or_number_union_type(t2.clone())
+                .is_number_bool_type_or_number_bool_union_type(t2.clone())
             && !matches!(op, ast::CmpOp::In | ast::CmpOp::NotIn)
         {
             return self.bool_ty();
@@ -287,10 +286,10 @@ impl<'ctx> Resolver<'ctx> {
         {
             return self.bool_ty();
         }
-        if t1.is_list() && t2.is_list() {
+        if matches!(op, ast::CmpOp::Eq) && t1.is_list() && t2.is_list() {
             return self.bool_ty();
         }
-        if t1.is_dict_or_schema() && t2.is_dict_or_schema() {
+        if matches!(op, ast::CmpOp::Eq) && t1.is_dict_or_schema() && t2.is_dict_or_schema() {
             return self.bool_ty();
         }
         if matches!(op, ast::CmpOp::In | ast::CmpOp::NotIn) && t2.is_iterable() {

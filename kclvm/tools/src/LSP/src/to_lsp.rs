@@ -5,6 +5,7 @@ use kclvm_error::Message;
 use kclvm_error::Position as KCLPos;
 use lsp_types::*;
 use ra_ap_vfs::FileId;
+use serde_json::json;
 
 use crate::state::LanguageServerSnapshot;
 use std::{
@@ -12,7 +13,7 @@ use std::{
     str::FromStr,
 };
 
-/// Convert pos format
+/// Convert pos format to lsp position.
 /// The position in lsp protocol is different with position in ast node whose line number is 1 based.
 pub fn lsp_pos(pos: &KCLPos) -> Position {
     Position {
@@ -21,6 +22,8 @@ pub fn lsp_pos(pos: &KCLPos) -> Position {
     }
 }
 
+/// Convert start and pos format to lsp location.
+/// The position of the location in lsp protocol is different with position in ast node whose line number is 1 based.
 pub fn lsp_location(file_path: String, start: &KCLPos, end: &KCLPos) -> Option<Location> {
     let uri = Url::from_file_path(file_path).ok()?;
     Some(Location {
@@ -32,7 +35,7 @@ pub fn lsp_location(file_path: String, start: &KCLPos, end: &KCLPos) -> Option<L
     })
 }
 
-/// Convert KCL Message to LSP Diagnostic
+/// Convert KCL message to the LSP diagnostic.
 fn kcl_msg_to_lsp_diags(
     msg: &Message,
     severity: DiagnosticSeverity,
@@ -42,6 +45,18 @@ fn kcl_msg_to_lsp_diags(
     let range = msg.range.clone();
     let start_position = lsp_pos(&range.0);
     let end_position = lsp_pos(&range.1);
+
+    let data = msg
+        .suggested_replacement
+        .as_ref()
+        .map(|s_vec| {
+            s_vec
+                .iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<&String>>()
+        })
+        .filter(|v| !v.is_empty())
+        .map(|s| json!({ "suggested_replacement": s }));
 
     let related_information = if related_msg.is_empty() {
         None
@@ -72,10 +87,11 @@ fn kcl_msg_to_lsp_diags(
         message: msg.message.clone(),
         related_information,
         tags: None,
-        data: None,
+        data,
     }
 }
 
+/// Convert KCL error level to the LSP diagnostic severity.
 fn kcl_err_level_to_severity(level: Level) -> DiagnosticSeverity {
     match level {
         Level::Error => DiagnosticSeverity::ERROR,
@@ -97,12 +113,15 @@ pub fn kcl_diag_to_lsp_diags(diag: &KCLDiagnostic, file_name: &str) -> Vec<Diagn
             } else {
                 None
             };
-            diags.push(kcl_msg_to_lsp_diags(
+
+            let lsp_diag = kcl_msg_to_lsp_diags(
                 msg,
                 kcl_err_level_to_severity(diag.level),
                 related_msg,
                 code,
-            ))
+            );
+
+            diags.push(lsp_diag);
         }
     }
     diags

@@ -6,16 +6,38 @@ use crate::resolver::resolve_program;
 use crate::resolver::resolve_program_with_opts;
 use crate::resolver::scope::*;
 use crate::ty::{Type, TypeKind};
+use anyhow::Result;
 use kclvm_ast::ast;
-use kclvm_ast::ast::CmdArgSpec;
 use kclvm_ast::pos::ContainsPos;
 use kclvm_error::*;
+use kclvm_parser::load_program;
+use kclvm_parser::parse_file_force_errors;
 use kclvm_parser::LoadProgramOptions;
 use kclvm_parser::ParseSession;
-use kclvm_parser::{load_program, parse_program};
+use kclvm_utils::path::PathPrefix;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
+
+pub fn parse_program(filename: &str) -> Result<ast::Program> {
+    let abspath = std::fs::canonicalize(std::path::PathBuf::from(filename)).unwrap();
+
+    let mut prog = ast::Program {
+        root: abspath.parent().unwrap().adjust_canonicalization(),
+        pkgs: HashMap::new(),
+    };
+
+    let mut module = parse_file_force_errors(abspath.to_str().unwrap(), None)?;
+    module.filename = filename.to_string();
+    module.pkg = kclvm_ast::MAIN_PKG.to_string();
+    module.name = kclvm_ast::MAIN_PKG.to_string();
+
+    prog.pkgs
+        .insert(kclvm_ast::MAIN_PKG.to_string(), vec![module]);
+
+    Ok(prog)
+}
 
 #[test]
 fn test_scope() {
@@ -55,7 +77,7 @@ fn test_resolve_program_with_cache() {
         &mut program,
         Options {
             merge_program: false,
-            type_alise: false,
+            type_erasure: false,
             ..Default::default()
         },
         None,
@@ -65,7 +87,7 @@ fn test_resolve_program_with_cache() {
         &mut program,
         Options {
             merge_program: false,
-            type_alise: false,
+            type_erasure: false,
             ..Default::default()
         },
         Some(cached_scope),
@@ -87,7 +109,8 @@ fn test_pkg_init_in_schema_resolve() {
         None,
         None,
     )
-    .unwrap();
+    .unwrap()
+    .program;
     let scope = resolve_program(&mut program);
     assert_eq!(
         scope.pkgpaths(),
@@ -121,10 +144,14 @@ fn test_resolve_program_fail() {
     let work_dir = "./src/resolver/test_fail_data/";
     let cases = &[
         "attr.k",
+        "cannot_find_member_0.k",
+        "cannot_find_member_1.k",
         "cannot_find_module.k",
         "comp_clause_error_0.k",
         "comp_clause_error_1.k",
         "comp_clause_error_2.k",
+        "comp_clause_error_3.k",
+        "comp_clause_error_4.k",
         "config_expr.k",
         "invalid_mixin_0.k",
         "module_optional_select.k",
@@ -132,7 +159,16 @@ fn test_resolve_program_fail() {
         "mutable_error_1.k",
         "unique_key_error_0.k",
         "unique_key_error_1.k",
+        "unmatched_index_sign_default_value.k",
         "unmatched_args.k",
+        "unmatched_nest_schema_attr_0.k",
+        "unmatched_nest_schema_attr_1.k",
+        "unmatched_nest_schema_attr_2.k",
+        "unmatched_nest_schema_attr_3.k",
+        "unmatched_schema_attr_0.k",
+        "unmatched_schema_attr_1.k",
+        "unmatched_schema_attr_2.k",
+        "unmatched_schema_attr_3.k",
     ];
     for case in cases {
         let path = Path::new(work_dir).join(case);
@@ -151,7 +187,8 @@ fn test_resolve_program_redefine() {
         None,
         None,
     )
-    .unwrap();
+    .unwrap()
+    .program;
 
     let scope = resolve_program(&mut program);
     assert_eq!(scope.handler.diagnostics.len(), 2);
@@ -190,7 +227,8 @@ fn test_resolve_program_cycle_reference_fail() {
         None,
         None,
     )
-    .unwrap();
+    .unwrap()
+    .program;
     let scope = resolve_program(&mut program);
     let err_messages = [
         "There is a circular import reference between module file1 and file2",
@@ -216,7 +254,8 @@ fn test_record_used_module() {
         None,
         None,
     )
-    .unwrap();
+    .unwrap()
+    .program;
     let scope = resolve_program(&mut program);
     let main_scope = scope
         .scope_map
@@ -335,7 +374,8 @@ fn test_lint() {
         None,
         None,
     )
-    .unwrap();
+    .unwrap()
+    .program;
     let opts = Options::default();
     pre_process_program(&mut program, &opts);
     let mut resolver = Resolver::new(&program, opts);
@@ -387,7 +427,7 @@ fn test_lint() {
             style: Style::Line,
             message: format!("Module 'a' is reimported multiple times"),
             note: Some("Consider removing this statement".to_string()),
-            suggested_replacement: Some("".to_string()),
+            suggested_replacement: None,
         }],
     );
     handler.add_warning(
@@ -408,7 +448,7 @@ fn test_lint() {
             style: Style::Line,
             message: format!("Module 'import_test.a' imported but unused"),
             note: Some("Consider removing this statement".to_string()),
-            suggested_replacement: Some("".to_string()),
+            suggested_replacement: None,
         }],
     );
     for (d1, d2) in resolver
@@ -480,7 +520,8 @@ fn test_pkg_scope() {
         None,
         None,
     )
-    .unwrap();
+    .unwrap()
+    .program;
     let scope = resolve_program(&mut program);
 
     assert_eq!(scope.scope_map.len(), 2);
@@ -530,7 +571,8 @@ fn test_system_package() {
         None,
         None,
     )
-    .unwrap();
+    .unwrap()
+    .program;
     let scope = resolve_program(&mut program);
     let main_scope = scope
         .scope_map
@@ -563,7 +605,8 @@ fn test_resolve_program_import_suggest() {
         None,
         None,
     )
-    .unwrap();
+    .unwrap()
+    .program;
     let scope = resolve_program(&mut program);
     assert_eq!(scope.handler.diagnostics.len(), 2);
     let diag = &scope.handler.diagnostics[0];
@@ -587,7 +630,8 @@ fn test_resolve_assignment_in_lambda() {
         None,
         None,
     )
-    .unwrap();
+    .unwrap()
+    .program;
     let scope = resolve_program(&mut program);
     let main_scope = scope.scope_map.get("__main__").unwrap().clone();
     assert_eq!(main_scope.borrow().children.len(), 1);
@@ -606,13 +650,14 @@ fn test_resolve_function_with_default_values() {
         None,
         None,
     )
-    .unwrap();
+    .unwrap()
+    .program;
     let scope = resolve_program(&mut program);
     assert!(!scope.handler.has_errors());
     let main_scope = scope.main_scope().unwrap();
     let func = main_scope.borrow().lookup("is_alpha").unwrap();
     assert!(func.borrow().ty.is_func());
-    let func_ty = func.borrow().ty.into_function_ty();
+    let func_ty = func.borrow().ty.into_func_type();
     assert_eq!(func_ty.params.len(), 3);
     assert_eq!(func_ty.params[0].has_default, false);
     assert_eq!(func_ty.params[1].has_default, true);
@@ -622,24 +667,15 @@ fn test_resolve_function_with_default_values() {
 #[test]
 fn test_assignment_type_annotation_check_in_lambda() {
     let sess = Arc::new(ParseSession::default());
-    let mut opts = LoadProgramOptions::default();
-    opts.cmd_args = vec![
-        CmdArgSpec {
-            name: "params".to_string(),
-            value: "annotations: {a: b}".to_string(),
-        },
-        CmdArgSpec {
-            name: "items".to_string(),
-            value: "metadata: {annotations:{c: d}}".to_string(),
-        },
-    ];
+    let opts = LoadProgramOptions::default();
     let mut program = load_program(
         sess.clone(),
         &["./src/resolver/test_data/annotation_check_assignment.k"],
         Some(opts),
         None,
     )
-    .unwrap();
+    .unwrap()
+    .program;
     let scope = resolve_program(&mut program);
     assert_eq!(scope.handler.diagnostics.len(), 0);
 }
@@ -653,7 +689,8 @@ fn test_resolve_lambda_assignment_diagnostic() {
         None,
         None,
     )
-    .unwrap();
+    .unwrap()
+    .program;
     let scope = resolve_program(&mut program);
     assert_eq!(scope.handler.diagnostics.len(), 1);
     let diag = &scope.handler.diagnostics[0];
@@ -674,9 +711,10 @@ fn test_ty_check_in_dict_assign_to_schema() {
         None,
         None,
     )
-    .unwrap();
+    .unwrap()
+    .program;
     let scope = resolve_program(&mut program);
-    assert_eq!(scope.handler.diagnostics.len(), 1);
+    assert_eq!(scope.handler.diagnostics.len(), 2);
     let diag = &scope.handler.diagnostics[0];
     assert_eq!(diag.code, Some(DiagnosticId::Error(ErrorKind::TypeError)));
     assert_eq!(diag.messages.len(), 2);
@@ -696,7 +734,8 @@ fn test_pkg_not_found_suggestion() {
         None,
         None,
     )
-    .unwrap();
+    .unwrap()
+    .program;
     let scope = resolve_program(&mut program);
     assert_eq!(scope.handler.diagnostics.len(), 4);
     let diag = &scope.handler.diagnostics[1];
@@ -724,7 +763,8 @@ fn undef_lambda_param() {
         None,
         None,
     )
-    .unwrap();
+    .unwrap()
+    .program;
     let scope = resolve_program(&mut program);
     assert_eq!(scope.handler.diagnostics.len(), 1);
 
@@ -762,7 +802,8 @@ fn test_schema_params_count() {
         None,
         None,
     )
-    .unwrap();
+    .unwrap()
+    .program;
     let scope = resolve_program(&mut program);
     assert_eq!(scope.handler.diagnostics.len(), 1);
     let diag = &scope.handler.diagnostics[0];
@@ -786,7 +827,8 @@ fn test_set_ty_in_lambda() {
         None,
         None,
     )
-    .unwrap();
+    .unwrap()
+    .program;
     assert_eq!(
         resolve_program(&mut program)
             .main_scope()
@@ -800,4 +842,47 @@ fn test_set_ty_in_lambda() {
             .ty_str(),
         "{str:str}"
     );
+}
+
+#[test]
+fn test_pkg_asname() {
+    let sess = Arc::new(ParseSession::default());
+    let mut program = load_program(
+        sess.clone(),
+        &["./src/resolver/test_data/pkg_asname/pkg_asname.k"],
+        None,
+        None,
+    )
+    .unwrap()
+    .program;
+    let scope = resolve_program(&mut program);
+    let diags = scope.handler.diagnostics;
+    assert_eq!(diags.len(), 6);
+    assert_eq!(diags[0].messages[0].message, "name 'pkg' is not defined");
+    assert_eq!(diags[2].messages[0].message, "name 'subpkg' is not defined");
+}
+
+#[test]
+fn test_builtin_file_invalid() {
+    let test_cases = [
+        (
+            "./src/resolver/test_data/test_builtin/read.k",
+            "expected 1 positional argument, found 0",
+        ),
+        (
+            "./src/resolver/test_data/test_builtin/glob.k",
+            "expected 1 positional argument, found 0",
+        ),
+    ];
+
+    for (file, expected_message) in &test_cases {
+        let sess = Arc::new(ParseSession::default());
+        let mut program = load_program(sess.clone(), &[file], None, None)
+            .unwrap()
+            .program;
+        let scope = resolve_program(&mut program);
+        let diags = scope.handler.diagnostics;
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].messages[0].message, *expected_message);
+    }
 }

@@ -1,4 +1,4 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
 
 extern crate serde_json;
 extern crate serde_yaml;
@@ -100,7 +100,7 @@ impl ValueRef {
             ignore_private: opt.ignore_private,
             ignore_none: opt.ignore_none,
         };
-        let json = self.to_json_string_with_option(&json_opt);
+        let json = self.to_json_string_with_options(&json_opt);
         let yaml_value: serde_yaml::Value = serde_json::from_str(json.as_ref()).unwrap();
         match serde_yaml::to_string(&yaml_value) {
             Ok(s) => {
@@ -115,6 +115,12 @@ impl ValueRef {
 #[cfg(test)]
 mod test_value_yaml {
     use crate::*;
+
+    #[test]
+    fn test_serde_yaml_on_str() {
+        let on_str = serde_yaml::to_string("on").unwrap();
+        assert_eq!(on_str, "'on'\n");
+    }
 
     #[test]
     fn test_value_from_yaml() {

@@ -4,7 +4,9 @@ use crate::builtin::system_module::{get_system_module_members, UNITS, UNITS_NUMB
 use crate::builtin::{get_system_member_function_ty, STRING_MEMBER_FUNCTIONS};
 use crate::resolver::Resolver;
 use crate::ty::TypeKind::Schema;
-use crate::ty::{DictType, ModuleKind, Type, TypeKind, TypeRef};
+use crate::ty::{
+    DictType, ModuleKind, Parameter, Type, TypeKind, TypeRef, SCHEMA_MEMBER_FUNCTIONS,
+};
 use kclvm_error::diagnostic::Range;
 use kclvm_error::*;
 
@@ -72,7 +74,12 @@ impl<'ctx> Resolver<'ctx> {
                         Arc::new(Type::function(
                             Some(obj.clone()),
                             Type::list_ref(self.any_ty()),
-                            &[],
+                            &[Parameter {
+                                name: "full_pkg".to_string(),
+                                ty: Type::bool_ref(),
+                                // Default value is False
+                                has_default: true,
+                            }],
                             "",
                             false,
                             None,
@@ -119,10 +126,17 @@ impl<'ctx> Resolver<'ctx> {
                 ("[missing name]", "".to_string())
             } else {
                 let mut suggestion = String::new();
-                // Calculate the closests miss attributes.
+                // Calculate the closest miss attributes.
                 if let Schema(schema_ty) = &obj.kind {
-                    // Get all the attrbuets of the schema.
-                    let attrs = schema_ty.attrs.keys().cloned().collect::<Vec<String>>();
+                    // Get all the attributes of the schema.
+                    let attrs = if schema_ty.is_instance {
+                        schema_ty.attrs.keys().cloned().collect::<Vec<String>>()
+                    } else {
+                        SCHEMA_MEMBER_FUNCTIONS
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect::<Vec<String>>()
+                    };
                     let suggs = suggestions::provide_suggestions(attr, &attrs);
                     if suggs.len() > 0 {
                         suggestion = format!(", did you mean '{:?}'?", suggs);
@@ -133,7 +147,7 @@ impl<'ctx> Resolver<'ctx> {
 
             self.handler.add_type_error(
                 &format!(
-                    "attribute '{}' not found in schema '{}'{}",
+                    "attribute '{}' not found in '{}'{}",
                     attr,
                     obj.ty_str(),
                     suggestion

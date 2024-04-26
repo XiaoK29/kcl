@@ -1,7 +1,5 @@
 #![allow(clippy::missing_safety_doc)]
 
-extern crate serde;
-
 use kclvm_parser::ParseSession;
 use kclvm_runner::exec_program;
 use kclvm_runner::runner::*;
@@ -16,7 +14,7 @@ use std::sync::Arc;
 ///
 /// args is a ExecProgramArgs JSON string.
 #[no_mangle]
-pub unsafe extern "C" fn kclvm_cli_run(args: *const i8, plugin_agent: *const i8) -> *const i8 {
+pub unsafe extern "C" fn kclvm_cli_run(args: *const c_char, plugin_agent: *const i8) -> *const i8 {
     let prev_hook = std::panic::take_hook();
 
     // disable print panic info
@@ -52,7 +50,7 @@ pub unsafe extern "C" fn kclvm_cli_run(args: *const i8, plugin_agent: *const i8)
 }
 
 /// KCL CLI run function CAPI.
-fn kclvm_cli_run_unsafe(args: *const i8, plugin_agent: *const i8) -> Result<String, String> {
+fn kclvm_cli_run_unsafe(args: *const c_char, plugin_agent: *const i8) -> Result<String, String> {
     let mut args =
         ExecProgramArgs::from_str(unsafe { std::ffi::CStr::from_ptr(args) }.to_str().unwrap());
     args.plugin_agent = plugin_agent as u64;

@@ -39,10 +39,9 @@ impl<'a> Parser<'a> {
             return Some(stmt);
         }
 
-        self.sess.struct_span_error(
-            &format!("unexpected '{:?}'", self.token.kind),
-            self.token.span,
-        );
+        let tok: String = self.token.into();
+        self.sess
+            .struct_span_error(&format!("unexpected token '{}'", tok), self.token.span);
 
         None
     }
@@ -267,9 +266,8 @@ impl<'a> Parser<'a> {
                         Stmt::SchemaAttr(SchemaAttr {
                             doc: "".to_string(),
                             name: node_ref!(target.get_name(), targets[0].pos()),
-                            type_str: type_annotation.unwrap(),
                             ty: ty.unwrap(),
-                            op: Some(BinOrAugOp::Aug(aug_op)),
+                            op: Some(aug_op),
                             value: Some(value),
                             is_optional: false,
                             decorators: Vec::new(),
@@ -306,12 +304,7 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
 
             Some(node_ref!(
-                Stmt::Assign(AssignStmt {
-                    targets,
-                    value,
-                    type_annotation,
-                    ty,
-                }),
+                Stmt::Assign(AssignStmt { targets, value, ty }),
                 self.token_span_pos(token, stmt_end_token)
             ))
         } else {
@@ -322,7 +315,6 @@ impl<'a> Parser<'a> {
                         Stmt::SchemaAttr(SchemaAttr {
                             doc: "".to_string(),
                             name: node_ref!(target.get_names().join("."), targets[0].pos()),
-                            type_str: type_annotation.unwrap(),
                             ty: ty.unwrap(),
                             op: None,
                             value: None,
@@ -377,7 +369,6 @@ impl<'a> Parser<'a> {
                         Stmt::Assign(AssignStmt {
                             targets: targets.clone(),
                             value: miss_expr,
-                            type_annotation,
                             ty,
                         }),
                         pos,
@@ -429,6 +420,7 @@ impl<'a> Parser<'a> {
     fn parse_import_stmt(&mut self) -> NodeRef<Stmt> {
         let token = self.token;
         self.bump_keyword(kw::Import);
+        let dot_name_token = self.token;
 
         let mut leading_dot = Vec::new();
         while let TokenKind::DotDotDot = self.token.kind {
@@ -440,10 +432,19 @@ impl<'a> Parser<'a> {
             self.bump_token(TokenKind::Dot);
         }
         let dot_name = self.parse_identifier().node;
+        let dot_name_end_token = self.prev_token;
+
         let asname = if self.token.is_keyword(kw::As) {
             self.bump_keyword(kw::As);
             let ident = self.parse_identifier().node;
-            Some(ident.get_names().join("."))
+            match ident.names.len() {
+                1 => Some(ident.names[0].clone()),
+                _ => {
+                    self.sess
+                        .struct_span_error("Invalid import asname", self.token.span);
+                    None
+                }
+            }
         } else {
             None
         };
@@ -452,16 +453,20 @@ impl<'a> Parser<'a> {
         path.push_str(dot_name.get_names().join(".").as_str());
 
         let rawpath = path.clone();
+        let path_node = Node::node_with_pos(
+            path,
+            self.token_span_pos(dot_name_token, dot_name_end_token),
+        );
 
         let name = if let Some(as_name_value) = asname.clone() {
-            as_name_value
+            as_name_value.node
         } else {
             dot_name.get_names().last().unwrap().clone()
         };
 
         let t = node_ref!(
             Stmt::Import(ImportStmt {
-                path,
+                path: path_node,
                 rawpath,
                 name,
                 asname,
@@ -591,7 +596,19 @@ impl<'a> Parser<'a> {
         // else
         if self.token.is_keyword(kw::Else) {
             self.bump_keyword(kw::Else);
-            self.bump_token(TokenKind::Colon);
+
+            // `else if -> elif` error recovery.
+            if self.token.is_keyword(kw::If) {
+                self.sess.struct_span_error(
+                    "'else if' here is invalid in KCL, consider using the 'elif' keyword",
+                    self.token.span,
+                );
+            } else if self.token.kind != TokenKind::Colon {
+                self.sess
+                    .struct_token_error(&[TokenKind::Colon.into()], self.token);
+            }
+            // Bump colon token.
+            self.bump();
 
             let else_body = if self.token.kind != TokenKind::Newline {
                 if let Some(stmt) = self.parse_expr_or_assign_stmt(false) {
@@ -731,7 +748,14 @@ impl<'a> Parser<'a> {
         if let TokenKind::Indent(VALID_SPACES_LENGTH) = self.token.kind {
             let body = self.parse_schema_body();
 
-            let pos = self.token_span_pos(token, self.prev_token);
+            let mut pos = self.token_span_pos(token, self.prev_token);
+            // Insert a fake newline character to expand the scope of the schema，
+            // used to complete the schema attributes at the end of the file
+            // FIXME: fix in lsp
+            if let TokenKind::Eof = self.prev_token.kind {
+                pos.3 += 1;
+                pos.4 = 0;
+            }
 
             node_ref!(
                 Stmt::Schema(SchemaStmt {
@@ -833,7 +857,6 @@ impl<'a> Parser<'a> {
         let mut args = Arguments {
             args: Vec::new(),
             defaults: Vec::new(),
-            type_annotation_list: Vec::new(),
             ty_list: Vec::new(),
         };
 
@@ -869,14 +892,12 @@ impl<'a> Parser<'a> {
 
             let name = node_ref!(name, self.token_span_pos(name_pos, name_end));
 
-            let (type_annotation, type_annotation_node) = if let TokenKind::Colon = self.token.kind
-            {
+            let type_annotation_node = if let TokenKind::Colon = self.token.kind {
                 self.bump_token(TokenKind::Colon);
                 let typ = self.parse_type_annotation();
-
-                (Some(node_ref!(typ.node.to_string(), typ.pos())), Some(typ))
+                Some(typ)
             } else {
-                (None, None)
+                None
             };
 
             let default_value = if let TokenKind::Assign = self.token.kind {
@@ -887,7 +908,6 @@ impl<'a> Parser<'a> {
             };
 
             args.args.push(name);
-            args.type_annotation_list.push(type_annotation);
             args.ty_list.push(type_annotation_node);
             args.defaults.push(default_value);
             // Parameter interval comma
@@ -1047,26 +1067,23 @@ impl<'a> Parser<'a> {
                 if let Stmt::Assign(assign) = x.node.clone() {
                     if assign.targets.len() == 1 {
                         let ident = assign.targets[0].clone().node;
-                        if let Some(type_str) = assign.type_annotation {
-                            if !type_str.node.is_empty() {
-                                body_body.push(node_ref!(
-                                    Stmt::SchemaAttr(SchemaAttr {
-                                        doc: "".to_string(),
-                                        name: node_ref!(
-                                            ident.get_names().join("."),
-                                            assign.targets[0].pos()
-                                        ),
-                                        type_str,
-                                        ty: assign.ty.unwrap(),
-                                        op: Some(BinOrAugOp::Aug(AugOp::Assign)),
-                                        value: Some(assign.value),
-                                        is_optional: false,
-                                        decorators: Vec::new(),
-                                    }),
-                                    x.pos()
-                                ));
-                                continue;
-                            }
+                        if assign.ty.is_some() {
+                            body_body.push(node_ref!(
+                                Stmt::SchemaAttr(SchemaAttr {
+                                    doc: "".to_string(),
+                                    name: node_ref!(
+                                        ident.get_names().join("."),
+                                        assign.targets[0].pos()
+                                    ),
+                                    ty: assign.ty.unwrap(),
+                                    op: Some(AugOp::Assign),
+                                    value: Some(assign.value),
+                                    is_optional: false,
+                                    decorators: Vec::new(),
+                                }),
+                                x.pos()
+                            ));
+                            continue;
                         };
                     }
                 }
@@ -1212,15 +1229,14 @@ impl<'a> Parser<'a> {
         self.bump_token(TokenKind::Colon);
 
         // Parse the schema attribute type annotation.
-        let typ = self.parse_type_annotation();
-        let type_str = node_ref!(typ.node.to_string(), typ.pos());
+        let ty = self.parse_type_annotation();
 
         let op = if self.token.kind == TokenKind::Assign {
             self.bump_token(TokenKind::Assign);
-            Some(BinOrAugOp::Aug(AugOp::Assign))
+            Some(AugOp::Assign)
         } else if let TokenKind::BinOpEq(x) = self.token.kind {
             self.bump_token(self.token.kind);
-            Some(BinOrAugOp::Aug(x.into()))
+            Some(x.into())
         } else {
             None
         };
@@ -1234,8 +1250,7 @@ impl<'a> Parser<'a> {
         SchemaAttr {
             doc,
             name,
-            type_str,
-            ty: typ,
+            ty,
             op,
             value,
             is_optional,
@@ -1284,14 +1299,10 @@ impl<'a> Parser<'a> {
     ///   LEFT_BRACKETS [NAME COLON] [ELLIPSIS] basic_type RIGHT_BRACKETS
     ///   COLON type [ASSIGN test] NEWLINE
     fn parse_schema_index_signature(&mut self) -> SchemaIndexSignature {
-        let (key_name, key_type, any_other) = if matches!(self.token.kind, TokenKind::DotDotDot) {
+        let (key_name, key_ty, any_other) = if matches!(self.token.kind, TokenKind::DotDotDot) {
             // bump token `...`
             self.bump();
-            let key_type = {
-                let typ = self.parse_type_annotation();
-                node_ref!(typ.node.to_string(), typ.pos())
-            };
-            (None, key_type, true)
+            (None, self.parse_type_annotation(), true)
         } else {
             let token = self.token;
             let expr = self.parse_identifier_expr();
@@ -1300,11 +1311,7 @@ impl<'a> Parser<'a> {
             let key_name = ident.get_names().join(".");
 
             if let TokenKind::CloseDelim(DelimToken::Bracket) = self.token.kind {
-                let key_type = {
-                    let typ = node_ref!(Type::Named(ident), pos);
-                    node_ref!(typ.node.to_string(), typ.pos())
-                };
-                (None, key_type, false)
+                (None, node_ref!(Type::Named(ident), pos), false)
             } else {
                 self.bump_token(TokenKind::Colon);
                 let any_other = if let TokenKind::DotDotDot = self.token.kind {
@@ -1313,19 +1320,14 @@ impl<'a> Parser<'a> {
                 } else {
                     false
                 };
-                let key_type = {
-                    let typ = self.parse_type_annotation();
-                    node_ref!(typ.node.to_string(), typ.pos())
-                };
-                (Some(key_name), key_type, any_other)
+                (Some(key_name), self.parse_type_annotation(), any_other)
             }
         };
 
         self.bump_token(TokenKind::CloseDelim(DelimToken::Bracket));
         self.bump_token(TokenKind::Colon);
 
-        let typ = self.parse_type_annotation();
-        let value_type = node_ref!(typ.node.to_string(), typ.pos());
+        let value_ty = self.parse_type_annotation();
 
         let value = if let TokenKind::Assign = self.token.kind {
             self.bump();
@@ -1338,9 +1340,8 @@ impl<'a> Parser<'a> {
 
         SchemaIndexSignature {
             key_name,
-            key_type,
-            value_type,
-            value_ty: typ,
+            key_ty,
+            value_ty,
             value,
             any_other,
         }

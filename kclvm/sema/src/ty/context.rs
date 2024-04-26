@@ -98,6 +98,11 @@ impl TypeContext {
 
     #[inline]
     pub fn is_number_type_or_number_union_type(&self, ty: TypeRef) -> bool {
+        self.is_kind_type_or_kind_union_type(ty, &[TypeFlags::INT, TypeFlags::FLOAT])
+    }
+
+    #[inline]
+    pub fn is_number_bool_type_or_number_bool_union_type(&self, ty: TypeRef) -> bool {
         self.is_kind_type_or_kind_union_type(
             ty,
             &[TypeFlags::INT, TypeFlags::FLOAT, TypeFlags::BOOL],
@@ -134,7 +139,6 @@ impl TypeContext {
             &[
                 TypeFlags::INT,
                 TypeFlags::FLOAT,
-                TypeFlags::BOOL,
                 TypeFlags::STR,
                 TypeFlags::LIST,
             ],

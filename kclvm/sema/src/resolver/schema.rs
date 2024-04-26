@@ -19,11 +19,12 @@ impl<'ctx> Resolver<'ctx> {
         &mut self,
         schema_stmt: &'ctx ast::SchemaStmt,
     ) -> ResolvedResult {
+        let (start, end) = (self.ctx.start_pos.clone(), self.ctx.end_pos.clone());
         self.resolve_unique_key(&schema_stmt.name.node, &schema_stmt.name.get_span_pos());
         let ty =
             self.lookup_type_from_scope(&schema_stmt.name.node, schema_stmt.name.get_span_pos());
         self.node_ty_map
-            .insert(schema_stmt.name.id.clone(), ty.clone());
+            .insert(self.get_node_key(schema_stmt.name.id.clone()), ty.clone());
         let scope_ty = if ty.is_schema() {
             ty.into_schema_type()
         } else {
@@ -40,13 +41,13 @@ impl<'ctx> Resolver<'ctx> {
             return ty;
         };
         self.ctx.schema = Some(Rc::new(RefCell::new(scope_ty.clone())));
-        let (start, end) = schema_stmt.get_span_pos();
         if let Some(args) = &schema_stmt.args {
             for (i, arg) in args.node.args.iter().enumerate() {
                 let ty = args.node.get_arg_type_node(i);
                 let ty = self.parse_ty_with_scope(ty, arg.get_span_pos());
                 if let Some(name) = arg.node.names.last() {
-                    self.node_ty_map.insert(name.id.clone(), ty.clone());
+                    self.node_ty_map
+                        .insert(self.get_node_key(name.id.clone()), ty.clone());
                 }
             }
         }
@@ -73,6 +74,7 @@ impl<'ctx> Resolver<'ctx> {
         if let (Some(index_signature), Some(index_signature_node)) =
             (scope_ty.index_signature, &schema_stmt.index_signature)
         {
+            // Insert the schema index signature key name into the scope.
             if let Some(key_name) = index_signature.key_name {
                 let (start, end) = index_signature_node.get_span_pos();
                 self.insert_object(
@@ -86,6 +88,17 @@ impl<'ctx> Resolver<'ctx> {
                         doc: None,
                     },
                 )
+            }
+            // Check index signature default value type.
+            if let Some(value) = &index_signature_node.node.value {
+                let expected_ty = index_signature.val_ty;
+                let value_ty = self.expr(value);
+                self.must_assignable_to(
+                    value_ty,
+                    expected_ty,
+                    index_signature_node.get_span_pos(),
+                    None,
+                );
             }
         }
         let schema_attr_names = schema_stmt.get_left_identifier_list();
@@ -123,7 +136,7 @@ impl<'ctx> Resolver<'ctx> {
         self.resolve_unique_key(&rule_stmt.name.node, &rule_stmt.name.get_span_pos());
         let ty = self.lookup_type_from_scope(&rule_stmt.name.node, rule_stmt.name.get_span_pos());
         self.node_ty_map
-            .insert(rule_stmt.name.id.clone(), ty.clone());
+            .insert(self.get_node_key(rule_stmt.name.id.clone()), ty.clone());
         let scope_ty = if ty.is_schema() {
             ty.into_schema_type()
         } else {

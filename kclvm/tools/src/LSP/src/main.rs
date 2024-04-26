@@ -9,6 +9,7 @@ mod config;
 mod db;
 mod dispatcher;
 mod document_symbol;
+mod error;
 mod find_refs;
 mod from_lsp;
 mod goto_def;
@@ -17,9 +18,11 @@ mod main_loop;
 mod notification;
 mod quick_fix;
 mod request;
+mod semantic_token;
 mod state;
 mod to_lsp;
 mod util;
+mod word_index;
 
 mod formatting;
 #[cfg(test)]

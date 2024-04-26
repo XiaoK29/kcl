@@ -1,4 +1,4 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
 
 use crate::*;
 use std::cell::Ref;
@@ -154,6 +154,7 @@ impl ValueRef {
                         -1
                     };
                     d.dict_update_entry(key, value, op, &index);
+                    d.set_potential_schema_type(&dict.potential_schema.clone().unwrap_or_default());
                     Some(d)
                 } else {
                     None
@@ -174,6 +175,9 @@ impl ValueRef {
                         -1
                     };
                     d.dict_update_entry(key, value, op, &index);
+                    d.set_potential_schema_type(
+                        &schema.config.potential_schema.clone().unwrap_or_default(),
+                    );
                     Some(d)
                 } else {
                     None
@@ -200,6 +204,7 @@ impl ValueRef {
                         d.dict_update_entry(key, value, op, index);
                     }
                 }
+                d.set_potential_schema_type(&dict.potential_schema.clone().unwrap_or_default());
                 d
             }
             Value::schema_value(ref schema) => {
@@ -216,6 +221,14 @@ impl ValueRef {
                         d.dict_update_entry(key, value, op, index);
                     }
                 }
+                d.set_potential_schema_type(
+                    &schema
+                        .config
+                        .potential_schema
+                        .as_ref()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                );
                 d
             }
             // Panic
@@ -233,6 +246,7 @@ impl ValueRef {
         };
         if v.is_config() {
             let v = v.as_dict_ref();
+            dict.potential_schema = v.potential_schema.clone();
             for (k, v) in v.values.iter() {
                 dict.values.insert(k.clone(), v.clone());
             }
@@ -248,7 +262,11 @@ impl ValueRef {
             Value::schema_value(schema) => {
                 schema.config.values.insert(key.to_string(), val);
             }
-            _ => panic!("invalid dict update value: {}", self.type_str()),
+            _ => panic!(
+                "failed to update the dict. An iterable of key-value pairs was expected, but got {}. Check if the syntax for updating the dictionary with the attribute '{}' is correct",
+                self.type_str(),
+                key
+            ),
         }
     }
 
@@ -271,7 +289,8 @@ impl ValueRef {
         dict.insert_indexs.insert(key.to_string(), *index);
     }
 
-    /// Insert key value pair with the idempotent check
+    /// Insert key value pair with the idempotent check.
+    #[inline]
     pub fn dict_insert(
         &mut self,
         ctx: &mut Context,
@@ -313,12 +332,12 @@ impl ValueRef {
 
                 if strict_range_check_i32 {
                     if v_i128 != ((v_i128 as i32) as i128) {
-                        ctx.set_err_type(&ErrType::IntOverflow_TYPE);
+                        ctx.set_err_type(&RuntimeErrorType::IntOverflow);
 
                         panic!("{v_i128}: A 32 bit integer overflow");
                     }
                 } else if strict_range_check_i64 && v_i128 != ((v_i128 as i64) as i128) {
-                    ctx.set_err_type(&ErrType::IntOverflow_TYPE);
+                    ctx.set_err_type(&RuntimeErrorType::IntOverflow);
 
                     panic!("{v_i128}: A 64 bit integer overflow");
                 }
@@ -376,6 +395,30 @@ impl ValueRef {
                 schema.config.values.remove(key);
             }
             _ => panic!("invalid dict remove value: {}", self.type_str()),
+        }
+    }
+
+    /// Set dict key with the value. When the dict is a schema and resolve schema validations.
+    pub fn dict_set_value(&mut self, ctx: &mut Context, key: &str, val: &ValueRef) {
+        let p = self;
+        if p.is_config() {
+            p.dict_update_key_value(key, val.clone());
+            if p.is_schema() {
+                let schema: ValueRef;
+                {
+                    let schema_value = p.as_schema();
+                    let mut config_keys = schema_value.config_keys.clone();
+                    config_keys.push(key.to_string());
+                    schema = resolve_schema(ctx, p, &config_keys);
+                }
+                p.schema_update_with_schema(&schema);
+            }
+        } else {
+            panic!(
+                "failed to update the dict. An iterable of key-value pairs was expected, but got {}. Check if the syntax for updating the dictionary with the attribute '{}' is correct",
+                p.type_str(),
+                key
+            );
         }
     }
 }

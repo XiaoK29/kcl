@@ -67,6 +67,46 @@ fn register_kclvm_service(io: &mut IoHandler) {
         };
         futures::future::ready(catch!(kclvm_service_impl, args, ping))
     });
+    io.add_method("KclvmService.ParseFile", |params: Params| {
+        let kclvm_service_impl = KclvmServiceImpl::default();
+        let args: ParseFileArgs = match params.parse() {
+            Ok(val) => val,
+            Err(err) => return futures::future::ready(Err(err)),
+        };
+        futures::future::ready(catch!(kclvm_service_impl, args, parse_file))
+    });
+    io.add_method("KclvmService.ParseProgram", |params: Params| {
+        let kclvm_service_impl = KclvmServiceImpl::default();
+        let args: ParseProgramArgs = match params.parse() {
+            Ok(val) => val,
+            Err(err) => return futures::future::ready(Err(err)),
+        };
+        futures::future::ready(catch!(kclvm_service_impl, args, parse_program))
+    });
+    io.add_method("KclvmService.LoadPackage", |params: Params| {
+        let kclvm_service_impl = KclvmServiceImpl::default();
+        let args: LoadPackageArgs = match params.parse() {
+            Ok(val) => val,
+            Err(err) => return futures::future::ready(Err(err)),
+        };
+        futures::future::ready(catch!(kclvm_service_impl, args, load_package))
+    });
+    io.add_method("KclvmService.ListOptions", |params: Params| {
+        let kclvm_service_impl = KclvmServiceImpl::default();
+        let args: ParseProgramArgs = match params.parse() {
+            Ok(val) => val,
+            Err(err) => return futures::future::ready(Err(err)),
+        };
+        futures::future::ready(catch!(kclvm_service_impl, args, list_options))
+    });
+    io.add_method("KclvmService.ListVariables", |params: Params| {
+        let kclvm_service_impl = KclvmServiceImpl::default();
+        let args: ListVariablesArgs = match params.parse() {
+            Ok(val) => val,
+            Err(err) => return futures::future::ready(Err(err)),
+        };
+        futures::future::ready(catch!(kclvm_service_impl, args, list_variables))
+    });
     io.add_method("KclvmService.ExecProgram", |params: Params| {
         let kclvm_service_impl = KclvmServiceImpl::default();
         let args: ExecProgramArgs = match params.parse() {
@@ -74,6 +114,22 @@ fn register_kclvm_service(io: &mut IoHandler) {
             Err(err) => return futures::future::ready(Err(err)),
         };
         futures::future::ready(catch!(kclvm_service_impl, args, exec_program))
+    });
+    io.add_method("KclvmService.BuildProgram", |params: Params| {
+        let kclvm_service_impl = KclvmServiceImpl::default();
+        let args: BuildProgramArgs = match params.parse() {
+            Ok(val) => val,
+            Err(err) => return futures::future::ready(Err(err)),
+        };
+        futures::future::ready(catch!(kclvm_service_impl, args, build_program))
+    });
+    io.add_method("KclvmService.ExecArtifact", |params: Params| {
+        let kclvm_service_impl = KclvmServiceImpl::default();
+        let args: ExecArtifactArgs = match params.parse() {
+            Ok(val) => val,
+            Err(err) => return futures::future::ready(Err(err)),
+        };
+        futures::future::ready(catch!(kclvm_service_impl, args, exec_artifact))
     });
     io.add_method("KclvmService.OverrideFile", |params: Params| {
         let kclvm_service_impl = KclvmServiceImpl::default();
@@ -183,7 +239,11 @@ fn register_builtin_service(io: &mut IoHandler) {
         let result = ListMethodResult {
             method_name_list: vec![
                 "KclvmService.Ping".to_owned(),
+                "KclvmService.ParseFile".to_owned(),
+                "KclvmService.ParseProgram".to_owned(),
                 "KclvmService.ExecProgram".to_owned(),
+                "KclvmService.BuildProgram".to_owned(),
+                "KclvmService.ExecArtifact".to_owned(),
                 "KclvmService.OverrideFile".to_owned(),
                 "KclvmService.GetSchemaType".to_owned(),
                 "KclvmService.GetFullSchemaType".to_owned(),

@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use kclvm_ast::MAIN_PKG;
 use kclvm_error::Position;
 use kclvm_sema::core::global_state::GlobalState;
 use kclvm_sema::core::symbol::KCLSymbol;
@@ -13,15 +14,14 @@ pub(crate) fn document_symbol(
     file: &str,
     gs: &GlobalState,
 ) -> Option<lsp_types::DocumentSymbolResponse> {
-    let mut documentsymbols: Vec<DocumentSymbol> = vec![];
+    let mut document_symbols: Vec<DocumentSymbol> = vec![];
 
     let dummy_pos = Position {
         filename: file.to_string(),
         line: 1,
         column: Some(0),
     };
-
-    if let Some(scope) = gs.look_up_scope(&dummy_pos) {
+    if let Some(scope) = gs.get_scopes().get_root_scope(MAIN_PKG.to_owned()) {
         if let Some(defs) = gs.get_all_defs_in_scope(scope) {
             for symbol_ref in defs {
                 match gs.get_symbols().get_symbol(symbol_ref) {
@@ -66,15 +66,19 @@ pub(crate) fn document_symbol(
                                                         }
 
                                                         schema_symbol.children = Some(children);
-                                                        documentsymbols.push(schema_symbol.clone());
+                                                        document_symbols
+                                                            .push(schema_symbol.clone());
                                                     }
                                                     None => {}
                                                 }
                                             }
-                                            _ => match symbol_to_document_symbol(symbol) {
-                                                Some(symbol) => documentsymbols.push(symbol),
-                                                None => {}
-                                            },
+                                            _ => {
+                                                if let Some(symbol) =
+                                                    symbol_to_document_symbol(symbol)
+                                                {
+                                                    document_symbols.push(symbol)
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -87,7 +91,7 @@ pub(crate) fn document_symbol(
             }
         }
     }
-    Some(DocumentSymbolResponse::Nested(documentsymbols))
+    Some(DocumentSymbolResponse::Nested(document_symbols))
 }
 
 fn symbol_to_document_symbol(symbol: &KCLSymbol) -> Option<DocumentSymbol> {
@@ -102,9 +106,10 @@ fn symbol_to_document_symbol(symbol: &KCLSymbol) -> Option<DocumentSymbol> {
                 end: lsp_pos(&symbol_range.1),
             };
             let kind = def.get_kind();
-            let kind = symbol_kind_to_document_symbol_kind(kind);
+            let kind = symbol_kind_to_document_symbol_kind(kind)?;
             let detail = sema_info.ty.clone().map(|ty| ty.ty_str());
 
+            #[allow(deprecated)]
             Some(DocumentSymbol {
                 name,
                 kind,
@@ -120,15 +125,18 @@ fn symbol_to_document_symbol(symbol: &KCLSymbol) -> Option<DocumentSymbol> {
     }
 }
 
-fn symbol_kind_to_document_symbol_kind(kind: KCLSymbolKind) -> SymbolKind {
+fn symbol_kind_to_document_symbol_kind(kind: KCLSymbolKind) -> Option<SymbolKind> {
     match kind {
-        KCLSymbolKind::Schema => SymbolKind::STRUCT,
-        KCLSymbolKind::Attribute => SymbolKind::PROPERTY,
-        KCLSymbolKind::Value => SymbolKind::VARIABLE,
-        KCLSymbolKind::Package => SymbolKind::PACKAGE,
-        KCLSymbolKind::TypeAlias => SymbolKind::TYPE_PARAMETER,
-        KCLSymbolKind::Unresolved => SymbolKind::NULL,
-        KCLSymbolKind::Rule => SymbolKind::FUNCTION,
+        KCLSymbolKind::Schema => Some(SymbolKind::STRUCT),
+        KCLSymbolKind::Attribute => Some(SymbolKind::PROPERTY),
+        KCLSymbolKind::Value => Some(SymbolKind::VARIABLE),
+        KCLSymbolKind::Package => Some(SymbolKind::PACKAGE),
+        KCLSymbolKind::TypeAlias => Some(SymbolKind::TYPE_PARAMETER),
+        KCLSymbolKind::Unresolved => Some(SymbolKind::NULL),
+        KCLSymbolKind::Rule => Some(SymbolKind::FUNCTION),
+        KCLSymbolKind::Expression => None,
+        KCLSymbolKind::Comment => None,
+        KCLSymbolKind::Decorator => None,
     }
 }
 
@@ -172,7 +180,7 @@ mod tests {
     #[test]
     #[bench_test]
     fn document_symbol_test() {
-        let (file, _, _, _, gs) = compile_test_file("src/test_data/document_symbol.k");
+        let (file, _, _, gs) = compile_test_file("src/test_data/document_symbol.k");
 
         let mut res = document_symbol(file.as_str(), &gs).unwrap();
         let mut expect = vec![];

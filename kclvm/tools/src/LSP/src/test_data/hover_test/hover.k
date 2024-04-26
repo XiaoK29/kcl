@@ -26,3 +26,18 @@ print(1)
 
 a = "".capitalize()
 b = a.capitalize()
+
+schema Deployment:
+    spec: DeploymentSpec
+
+schema DeploymentSpec:
+    stratege: str
+    replicas?: int
+
+d = Deployment{
+    spec: DeploymentSpec {
+        if True:
+            replicas = 1
+        stratege: "a"
+    }
+}

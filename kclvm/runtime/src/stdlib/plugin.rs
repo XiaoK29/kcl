@@ -1,4 +1,5 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
+
 #![allow(clippy::missing_safety_doc)]
 
 use crate::*;
@@ -23,15 +24,15 @@ pub extern "C" fn kclvm_plugin_init(
 }
 
 // import kcl_plugin.hello
-// hello.SayHello()
+// hello.say_hello()
 //
-// => return kclvm_plugin_invoke("kcl_plugin.hello.SayHello", args, kwarge)
+// => return kclvm_plugin_invoke("kcl_plugin.hello.say_hello", args, kwargs)
 
 #[no_mangle]
 #[runtime_fn]
 pub unsafe extern "C" fn kclvm_plugin_invoke(
     ctx: *mut kclvm_context_t,
-    method: *const i8,
+    method: *const c_char,
     args: *const kclvm_value_ref_t,
     kwargs: *const kclvm_value_ref_t,
 ) -> *const kclvm_value_ref_t {
@@ -51,7 +52,7 @@ pub unsafe extern "C" fn kclvm_plugin_invoke(
     {
         if let Some(msg) = ptr_as_ref(ptr).dict_get_value("__kcl_PanicInfo__") {
             let ctx = mut_ptr_as_ref(ctx);
-            ctx.set_err_type(&ErrType::EvaluationError_TYPE);
+            ctx.set_err_type(&RuntimeErrorType::EvaluationError);
 
             panic!("{}", msg.as_str());
         }
@@ -64,7 +65,7 @@ pub unsafe extern "C" fn kclvm_plugin_invoke(
 #[no_mangle]
 #[runtime_fn]
 pub extern "C" fn kclvm_plugin_invoke_json(
-    method: *const i8,
+    method: *const c_char,
     args: *const c_char,
     kwargs: *const c_char,
 ) -> *const c_char {
@@ -75,7 +76,7 @@ pub extern "C" fn kclvm_plugin_invoke_json(
 
         let ptr = (&_plugin_handler_fn_ptr as *const u64) as *const ()
             as *const extern "C" fn(
-                method: *const i8,
+                method: *const c_char,
                 args: *const c_char,
                 kwargs: *const c_char,
             ) -> *const c_char;

@@ -1,10 +1,10 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
 extern crate chrono;
 use super::modfile::KCL_FILE_SUFFIX;
-use crypto::digest::Digest;
-use crypto::md5::Md5;
-use fslock::LockFile;
+use anyhow::Result;
+use kclvm_utils::fslock::open_lock_file;
 use kclvm_utils::pkgpath::{parse_external_pkg_name, rm_external_pkg_name};
+use md5::{Digest, Md5};
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::HashMap;
 use std::error;
@@ -18,8 +18,9 @@ const LOCK_SUFFIX: &str = ".lock";
 const DEFAULT_CACHE_DIR: &str = ".kclvm/cache";
 const CACHE_INFO_FILENAME: &str = "info";
 const KCL_SUFFIX_PATTERN: &str = "*.k";
+pub const KCL_CACHE_PATH_ENV_VAR: &str = "KCL_CACHE_PATH";
 
-pub type CacheInfo = String;
+pub type CacheInfo = Vec<u8>;
 pub type Cache = HashMap<String, CacheInfo>;
 
 #[allow(dead_code)]
@@ -101,12 +102,16 @@ pub fn save_pkg_cache<T>(
     data: T,
     option: CacheOption,
     external_pkgs: &HashMap<String, String>,
-) -> Result<(), String>
+) -> Result<()>
 where
     T: Serialize,
 {
     if root.is_empty() || pkgpath.is_empty() {
-        return Err("failed to save cache".to_string());
+        return Err(anyhow::anyhow!(
+            "failed to save package cache {} to root {}",
+            pkgpath,
+            root
+        ));
     }
     let dst_filename = get_cache_filename(root, target, pkgpath, Some(&option.cache_dir));
     let real_path = get_pkg_realpath_from_pkgpath(root, pkgpath);
@@ -116,7 +121,9 @@ where
         // If the file does not exist, it is an external package.
         let pkg_name = parse_external_pkg_name(pkgpath)?;
         let real_path = get_pkg_realpath_from_pkgpath(
-            external_pkgs.get(&pkg_name).ok_or("failed to save cache")?,
+            external_pkgs
+                .get(&pkg_name)
+                .ok_or(anyhow::anyhow!("failed to save cache"))?,
             &rm_external_pkg_name(pkgpath)?,
         );
         if Path::new(&real_path).exists() {
@@ -126,14 +133,16 @@ where
     let cache_dir = get_cache_dir(root, Some(&option.cache_dir));
     create_dir_all(&cache_dir).unwrap();
     let tmp_filename = temp_file(&cache_dir, pkgpath);
-    save_data_to_file(&dst_filename, &tmp_filename, data);
-    return Ok(());
+    save_data_to_file(&dst_filename, &tmp_filename, data)
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    Ok(())
 }
 
 #[inline]
 fn get_cache_dir(root: &str, cache_dir: Option<&str>) -> String {
     let cache_dir = cache_dir.unwrap_or(DEFAULT_CACHE_DIR);
-    Path::new(root)
+    let root = std::env::var(KCL_CACHE_PATH_ENV_VAR).unwrap_or(root.to_string());
+    Path::new(&root)
         .join(cache_dir)
         .join(format!("{}-{}", version::VERSION, version::CHECK_SUM))
         .display()
@@ -144,7 +153,8 @@ fn get_cache_dir(root: &str, cache_dir: Option<&str>) -> String {
 #[allow(dead_code)]
 fn get_cache_filename(root: &str, target: &str, pkgpath: &str, cache_dir: Option<&str>) -> String {
     let cache_dir = cache_dir.unwrap_or(DEFAULT_CACHE_DIR);
-    Path::new(root)
+    let root = std::env::var(KCL_CACHE_PATH_ENV_VAR).unwrap_or(root.to_string());
+    Path::new(&root)
         .join(cache_dir)
         .join(format!("{}-{}", version::VERSION, version::CHECK_SUM))
         .join(target)
@@ -156,7 +166,8 @@ fn get_cache_filename(root: &str, target: &str, pkgpath: &str, cache_dir: Option
 #[inline]
 fn get_cache_info_filename(root: &str, target: &str, cache_dir: Option<&str>) -> String {
     let cache_dir = cache_dir.unwrap_or(DEFAULT_CACHE_DIR);
-    Path::new(root)
+    let root = std::env::var(KCL_CACHE_PATH_ENV_VAR).unwrap_or(root.to_string());
+    Path::new(&root)
         .join(cache_dir)
         .join(format!("{}-{}", version::VERSION, version::CHECK_SUM))
         .join(target)
@@ -189,19 +200,18 @@ pub fn write_info_cache(
     let dst_filename = get_cache_info_filename(root, target, cache_name);
     let cache_dir = get_cache_dir(root, cache_name);
     let path = Path::new(&cache_dir);
-    create_dir_all(path).unwrap();
+    create_dir_all(path)?;
     let relative_path = filepath.replacen(root, ".", 1);
     let cache_info = get_cache_info(filepath);
     let tmp_filename = temp_file(&cache_dir, "");
-    let mut lock_file = LockFile::open(&format!("{}{}", dst_filename, LOCK_SUFFIX)).unwrap();
-    lock_file.lock().unwrap();
+    let mut lock_file = open_lock_file(&format!("{}{}", dst_filename, LOCK_SUFFIX))?;
+    lock_file.lock()?;
     let mut cache = read_info_cache(root, target, cache_name);
     cache.insert(relative_path, cache_info);
-    let mut file = File::create(&tmp_filename).unwrap();
-    file.write_all(ron::ser::to_string(&cache).unwrap().as_bytes())
-        .unwrap();
-    std::fs::rename(&tmp_filename, &dst_filename).unwrap();
-    lock_file.unlock().unwrap();
+    let mut file = File::create(&tmp_filename)?;
+    file.write_all(ron::ser::to_string(&cache)?.as_bytes())?;
+    std::fs::rename(&tmp_filename, &dst_filename)?;
+    lock_file.unlock()?;
     Ok(())
 }
 
@@ -226,7 +236,7 @@ fn get_cache_info(path_str: &str) -> CacheInfo {
             md5.input(buf.as_slice());
         }
     }
-    md5.result_str()
+    md5.result().to_vec()
 }
 
 pub fn get_pkg_realpath_from_pkgpath(root: &str, pkgpath: &str) -> String {
@@ -251,21 +261,28 @@ where
     }
 }
 
-pub fn save_data_to_file<T>(dst_filename: &str, tmp_filename: &str, data: T)
+pub fn save_data_to_file<T>(
+    dst_filename: &str,
+    tmp_filename: &str,
+    data: T,
+) -> Result<(), Box<dyn error::Error>>
 where
     T: Serialize,
 {
-    let mut lock_file = LockFile::open(&format!("{}{}", dst_filename, LOCK_SUFFIX)).unwrap();
-    lock_file.lock().unwrap();
-    let file = File::create(tmp_filename).unwrap();
-    ron::ser::to_writer(file, &data).unwrap();
-    std::fs::rename(tmp_filename, dst_filename).unwrap();
-    lock_file.unlock().unwrap();
+    let mut lock_file = open_lock_file(&format!("{}{}", dst_filename, LOCK_SUFFIX))?;
+    lock_file.lock()?;
+    let file = File::create(tmp_filename)?;
+    ron::ser::to_writer(file, &data)?;
+    std::fs::rename(tmp_filename, dst_filename)?;
+    lock_file.unlock()?;
+    Ok(())
 }
 
 #[inline]
 fn temp_file(cache_dir: &str, pkgpath: &str) -> String {
-    let timestamp = chrono::Local::now().timestamp_nanos();
+    let timestamp = chrono::Local::now()
+        .timestamp_nanos_opt()
+        .unwrap_or_default();
     let id = std::process::id();
     Path::new(cache_dir)
         .join(format!("{}.{}.{}.tmp", pkgpath, id, timestamp))

@@ -72,6 +72,12 @@ impl<'ctx> Resolver<'ctx> {
                     let obj = obj.clone();
                     match obj {
                         Some(obj) => match &obj.ty.kind {
+                            TypeKind::List(elem_type) => Some(self.new_config_expr_context_item(
+                                key_name,
+                                elem_type.clone(),
+                                obj.start.clone(),
+                                obj.end.clone(),
+                            )),
                             TypeKind::Dict(DictType {
                                 key_ty: _, val_ty, ..
                             }) => Some(self.new_config_expr_context_item(
@@ -153,6 +159,15 @@ impl<'ctx> Resolver<'ctx> {
         }
     }
 
+    /// Switch the context in 'config_expr_context' stack by the list index `[]`
+    ///
+    /// Returns:
+    ///     push stack times
+    #[inline]
+    pub(crate) fn switch_list_expr_context(&mut self) -> usize {
+        self.switch_config_expr_context_by_names(&["[]".to_string()])
+    }
+
     /// Switch the context in 'config_expr_context' stack by name
     ///
     /// find the next item that needs to be pushed into the stack,
@@ -186,7 +201,7 @@ impl<'ctx> Resolver<'ctx> {
     /// Pop method for the 'config_expr_context' stack
     ///
     /// Returns:
-    ///     the item poped from stack.
+    ///     the item popped from stack.
     #[inline]
     pub(crate) fn restore_config_expr_context(&mut self) -> Option<ScopeObject> {
         match self.ctx.config_expr_context.pop() {
@@ -243,9 +258,7 @@ impl<'ctx> Resolver<'ctx> {
         if !name.is_empty() {
             if let Some(Some(obj)) = self.ctx.config_expr_context.last() {
                 let obj = obj.clone();
-                if let TypeKind::Schema(schema_ty) = &obj.ty.kind {
-                    self.check_config_attr(name, &key.get_span_pos(), schema_ty);
-                }
+                self.must_check_config_attr(name, &key.get_span_pos(), &obj.ty);
             }
         }
     }
@@ -314,22 +327,84 @@ impl<'ctx> Resolver<'ctx> {
         }
     }
 
+    pub(crate) fn get_config_attr_err_suggestion(
+        &self,
+        attr: &str,
+        schema_ty: &SchemaType,
+    ) -> (Vec<String>, String) {
+        let mut suggestion = String::new();
+        // Calculate the closest miss attributes.
+        let suggs = suggestions::provide_suggestions(attr, schema_ty.attrs.keys());
+        if suggs.len() > 0 {
+            suggestion = format!(", did you mean '{:?}'?", suggs);
+        }
+        (suggs, suggestion)
+    }
+
+    /// Check config attr has been defined.
+    pub(crate) fn must_check_config_attr(&mut self, attr: &str, range: &Range, ty: &TypeRef) {
+        if let TypeKind::Schema(schema_ty) = &ty.kind {
+            self.check_config_attr(attr, range, schema_ty)
+        } else if let TypeKind::Union(types) = &ty.kind {
+            let mut schema_names = vec![];
+            let mut total_suggs = vec![];
+            for ty in types {
+                if let TypeKind::Schema(schema_ty) = &ty.kind {
+                    if schema_ty.get_obj_of_attr(attr).is_none()
+                        && !schema_ty.is_mixin
+                        && schema_ty.index_signature.is_none()
+                    {
+                        let mut suggs =
+                            suggestions::provide_suggestions(attr, schema_ty.attrs.keys());
+                        total_suggs.append(&mut suggs);
+                        schema_names.push(schema_ty.name.clone());
+                    } else {
+                        // If there is a schema attribute that meets the condition, the type check passes
+                        return;
+                    }
+                }
+            }
+            if !schema_names.is_empty() {
+                self.handler.add_compile_error_with_suggestions(
+                    &format!(
+                        "Cannot add member '{}' to '{}'{}",
+                        attr,
+                        if schema_names.len() > 1 {
+                            format!("schemas {:?}", schema_names)
+                        } else {
+                            format!("schema {}", schema_names[0])
+                        },
+                        if total_suggs.is_empty() {
+                            "".to_string()
+                        } else {
+                            format!(", did you mean '{:?}'?", total_suggs)
+                        },
+                    ),
+                    range.clone(),
+                    Some(total_suggs),
+                );
+            }
+        }
+    }
+
     /// Check config attr has been defined.
     pub(crate) fn check_config_attr(&mut self, attr: &str, range: &Range, schema_ty: &SchemaType) {
         let runtime_type = kclvm_runtime::schema_runtime_type(&schema_ty.name, &schema_ty.pkgpath);
         match self.ctx.schema_mapping.get(&runtime_type) {
             Some(schema_mapping_ty) => {
-                let schema_ty = schema_mapping_ty.borrow();
-                if schema_ty.get_obj_of_attr(attr).is_none()
-                    && !schema_ty.is_mixin
-                    && schema_ty.index_signature.is_none()
+                let schema_ty_ref = schema_mapping_ty.borrow();
+                if schema_ty_ref.get_obj_of_attr(attr).is_none()
+                    && !schema_ty_ref.is_mixin
+                    && schema_ty_ref.index_signature.is_none()
                 {
-                    self.handler.add_compile_error(
+                    let (suggs, msg) = self.get_config_attr_err_suggestion(attr, schema_ty);
+                    self.handler.add_compile_error_with_suggestions(
                         &format!(
-                            "Cannot add member '{}' to schema '{}'",
-                            attr, schema_ty.name
+                            "Cannot add member '{}' to schema '{}'{}",
+                            attr, schema_ty_ref.name, msg,
                         ),
                         range.clone(),
+                        Some(suggs),
                     );
                 }
             }
@@ -338,12 +413,14 @@ impl<'ctx> Resolver<'ctx> {
                     && !schema_ty.is_mixin
                     && schema_ty.index_signature.is_none()
                 {
-                    self.handler.add_compile_error(
+                    let (suggs, msg) = self.get_config_attr_err_suggestion(attr, schema_ty);
+                    self.handler.add_compile_error_with_suggestions(
                         &format!(
-                            "Cannot add member '{}' to schema '{}'",
-                            attr, schema_ty.name
+                            "Cannot add member '{}' to schema '{}'{}",
+                            attr, schema_ty.name, msg,
                         ),
                         range.clone(),
+                        Some(suggs),
                     );
                 }
             }

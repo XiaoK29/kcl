@@ -1,4 +1,4 @@
-; Copyright 2021 The KCL Authors. All rights reserved.
+; Copyright The KCL Authors. All rights reserved.
 
 ; Auto generated, DONOT EDIT!!!
 
@@ -11,6 +11,8 @@
 %"kclvm_context_t" = type { i8* }
 
 %"kclvm_decorator_value_t" = type opaque
+
+%"kclvm_eval_scope_t" = type { i8* }
 
 %"kclvm_float_t" = type double
 
@@ -34,37 +36,37 @@ declare %kclvm_value_ref_t* @kclvm_base64_decode(%kclvm_context_t* %ctx, %kclvm_
 
 declare %kclvm_value_ref_t* @kclvm_base64_encode(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
 
-declare %kclvm_value_ref_t* @kclvm_builtin_abs(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
+declare %kclvm_value_ref_t* @kclvm_builtin_abs(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
-declare %kclvm_value_ref_t* @kclvm_builtin_all_true(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
+declare %kclvm_value_ref_t* @kclvm_builtin_all_true(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
 declare %kclvm_value_ref_t* @kclvm_builtin_any_true(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
-declare %kclvm_value_ref_t* @kclvm_builtin_bin(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
+declare %kclvm_value_ref_t* @kclvm_builtin_bin(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
-declare %kclvm_value_ref_t* @kclvm_builtin_bool(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
+declare %kclvm_value_ref_t* @kclvm_builtin_bool(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
 declare %kclvm_value_ref_t* @kclvm_builtin_dict(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
 declare %kclvm_value_ref_t* @kclvm_builtin_float(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
-declare %kclvm_value_ref_t* @kclvm_builtin_hex(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
+declare %kclvm_value_ref_t* @kclvm_builtin_hex(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
 declare %kclvm_value_ref_t* @kclvm_builtin_int(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
-declare %kclvm_value_ref_t* @kclvm_builtin_isunique(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
+declare %kclvm_value_ref_t* @kclvm_builtin_isunique(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
-declare %kclvm_value_ref_t* @kclvm_builtin_len(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
+declare %kclvm_value_ref_t* @kclvm_builtin_len(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
-declare %kclvm_value_ref_t* @kclvm_builtin_list(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
+declare %kclvm_value_ref_t* @kclvm_builtin_list(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
 declare %kclvm_value_ref_t* @kclvm_builtin_max(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
 
 declare %kclvm_value_ref_t* @kclvm_builtin_min(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
 
-declare %kclvm_value_ref_t* @kclvm_builtin_multiplyof(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
+declare %kclvm_value_ref_t* @kclvm_builtin_multiplyof(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
-declare %kclvm_value_ref_t* @kclvm_builtin_oct(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
+declare %kclvm_value_ref_t* @kclvm_builtin_oct(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
 declare %kclvm_value_ref_t* @kclvm_builtin_option(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
@@ -72,19 +74,19 @@ declare void @kclvm_builtin_option_init(%kclvm_context_t* %ctx, i8* %key, i8* %v
 
 declare %kclvm_value_ref_t* @kclvm_builtin_option_reset(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %_args, %kclvm_value_ref_t* %_kwargs);
 
-declare %kclvm_value_ref_t* @kclvm_builtin_ord(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
+declare %kclvm_value_ref_t* @kclvm_builtin_ord(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
-declare %kclvm_value_ref_t* @kclvm_builtin_pow(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
+declare %kclvm_value_ref_t* @kclvm_builtin_pow(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
 declare %kclvm_value_ref_t* @kclvm_builtin_print(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
-declare %kclvm_value_ref_t* @kclvm_builtin_range(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
+declare %kclvm_value_ref_t* @kclvm_builtin_range(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
-declare %kclvm_value_ref_t* @kclvm_builtin_round(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
+declare %kclvm_value_ref_t* @kclvm_builtin_round(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
 declare %kclvm_value_ref_t* @kclvm_builtin_sorted(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
-declare %kclvm_value_ref_t* @kclvm_builtin_str(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
+declare %kclvm_value_ref_t* @kclvm_builtin_str(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
 declare %kclvm_value_ref_t* @kclvm_builtin_str_capitalize(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
 
@@ -144,7 +146,7 @@ declare %kclvm_value_ref_t* @kclvm_builtin_str_title(%kclvm_context_t* %ctx, %kc
 
 declare %kclvm_value_ref_t* @kclvm_builtin_str_upper(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
 
-declare %kclvm_value_ref_t* @kclvm_builtin_sum(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
+declare %kclvm_value_ref_t* @kclvm_builtin_sum(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
 declare %kclvm_value_ref_t* @kclvm_builtin_typeof(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
@@ -155,10 +157,6 @@ declare void @kclvm_config_attr_map(%kclvm_value_ref_t* %value, %kclvm_char_t* %
 declare void @kclvm_context_delete(%kclvm_context_t* %p);
 
 declare i8* @kclvm_context_invoke(%kclvm_context_t* %p, i8* %method, i8* %args, i8* %kwargs);
-
-declare void @kclvm_context_main_begin_hook(%kclvm_context_t* %p);
-
-declare %kclvm_value_ref_t* @kclvm_context_main_end_hook(%kclvm_context_t* %p, %kclvm_value_ref_t* %return_value);
 
 declare %kclvm_context_t* @kclvm_context_new();
 
@@ -178,13 +176,17 @@ declare void @kclvm_context_set_kcl_line_col(%kclvm_context_t* %ctx, i32 %line, 
 
 declare void @kclvm_context_set_kcl_location(%kclvm_context_t* %p, i8* %filename, i32 %line, i32 %col);
 
+declare void @kclvm_context_set_kcl_modpath(%kclvm_context_t* %p, i8* %module_path);
+
 declare void @kclvm_context_set_kcl_pkgpath(%kclvm_context_t* %p, i8* %pkgpath);
 
-declare void @kclvm_context_set_list_option_mode(%kclvm_context_t* %p, %kclvm_bool_t %v);
+declare void @kclvm_context_set_kcl_workdir(%kclvm_context_t* %p, i8* %workdir);
 
 declare void @kclvm_context_set_strict_range_check(%kclvm_context_t* %p, %kclvm_bool_t %v);
 
 declare %kclvm_value_ref_t* @kclvm_convert_collection_value(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %value, %kclvm_char_t* %tpe, %kclvm_value_ref_t* %is_in_schema);
+
+declare %kclvm_value_ref_t* @kclvm_crypto_filesha256(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
 
 declare %kclvm_value_ref_t* @kclvm_crypto_md5(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
 
@@ -197,6 +199,8 @@ declare %kclvm_value_ref_t* @kclvm_crypto_sha256(%kclvm_context_t* %ctx, %kclvm_
 declare %kclvm_value_ref_t* @kclvm_crypto_sha384(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
 
 declare %kclvm_value_ref_t* @kclvm_crypto_sha512(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
+
+declare %kclvm_value_ref_t* @kclvm_crypto_uuid(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %_args, %kclvm_value_ref_t* %_kwargs);
 
 declare %kclvm_value_ref_t* @kclvm_datetime_date(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %_args, %kclvm_value_ref_t* %_kwargs);
 
@@ -248,6 +252,18 @@ declare void @kclvm_dict_update_key_value(%kclvm_value_ref_t* %p, %kclvm_value_r
 
 declare %kclvm_value_ref_t* @kclvm_dict_values(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %p);
 
+declare %kclvm_value_ref_t* @kclvm_file_abs(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
+
+declare %kclvm_value_ref_t* @kclvm_file_exists(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
+
+declare %kclvm_value_ref_t* @kclvm_file_glob(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
+
+declare %kclvm_value_ref_t* @kclvm_file_modpath(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %_args, %kclvm_value_ref_t* %_kwargs);
+
+declare %kclvm_value_ref_t* @kclvm_file_read(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
+
+declare %kclvm_value_ref_t* @kclvm_file_workdir(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %_args, %kclvm_value_ref_t* %_kwargs);
+
 declare %kclvm_value_ref_t* @kclvm_iterator_cur_key(%kclvm_iterator_t* %p);
 
 declare %kclvm_value_ref_t* @kclvm_iterator_cur_value(%kclvm_iterator_t* %p);
@@ -260,7 +276,7 @@ declare %kclvm_value_ref_t* @kclvm_iterator_next_value(%kclvm_iterator_t* %p, %k
 
 declare %kclvm_value_ref_t* @kclvm_json_decode(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
 
-declare %kclvm_value_ref_t* @kclvm_json_dump_to_file(%kclvm_context_t* %_ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
+declare %kclvm_value_ref_t* @kclvm_json_dump_to_file(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
 declare %kclvm_value_ref_t* @kclvm_json_encode(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
@@ -302,7 +318,7 @@ declare void @kclvm_list_resize(%kclvm_value_ref_t* %p, %kclvm_size_t %newsize);
 
 declare void @kclvm_list_set(%kclvm_value_ref_t* %p, %kclvm_size_t %i, %kclvm_value_ref_t* %v);
 
-declare void @kclvm_manifests_yaml_stream(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
+declare %kclvm_value_ref_t* @kclvm_manifests_yaml_stream(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
 declare %kclvm_value_ref_t* @kclvm_math_ceil(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
 
@@ -390,7 +406,7 @@ declare void @kclvm_schema_assert(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %v
 
 declare void @kclvm_schema_backtrack_cache(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %schema, %kclvm_value_ref_t* %cache, %kclvm_value_ref_t* %cal_map, %kclvm_char_t* %name, %kclvm_value_ref_t* %runtime_type);
 
-declare void @kclvm_schema_default_settings(%kclvm_value_ref_t* %schema_value, %kclvm_value_ref_t* %config_value, %kclvm_char_t* %runtime_type);
+declare void @kclvm_schema_default_settings(%kclvm_value_ref_t* %schema_value, %kclvm_value_ref_t* %_config_value, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs, %kclvm_char_t* %runtime_type);
 
 declare void @kclvm_schema_do_check_with_index_sign_attr(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs, i64* %check_fn_ptr, %kclvm_char_t* %attr_name);
 
@@ -403,6 +419,20 @@ declare void @kclvm_schema_optional_check(%kclvm_context_t* %ctx, %kclvm_value_r
 declare void @kclvm_schema_value_check(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %schema_value, %kclvm_value_ref_t* %schema_config, %kclvm_value_ref_t* %_config_meta, %kclvm_char_t* %schema_name, %kclvm_value_ref_t* %index_sign_value, %kclvm_char_t* %key_name, %kclvm_char_t* %key_type, %kclvm_char_t* %value_type, %kclvm_bool_t %_any_other);
 
 declare %kclvm_value_ref_t* @kclvm_schema_value_new(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs, %kclvm_value_ref_t* %schema_value_or_func, %kclvm_value_ref_t* %config, %kclvm_value_ref_t* %config_meta, %kclvm_char_t* %pkgpath);
+
+declare void @kclvm_scope_add_setter(%kclvm_context_t* %_ctx, %kclvm_eval_scope_t* %scope, i8* %pkg, i8* %name, i64* %setter);
+
+declare void @kclvm_scope_free(%kclvm_eval_scope_t* %scope);
+
+declare %kclvm_value_ref_t* @kclvm_scope_get(%kclvm_context_t* %ctx, %kclvm_eval_scope_t* %scope, i8* %pkg, i8* %name, i8* %target, %kclvm_value_ref_t* %default);
+
+declare %kclvm_eval_scope_t* @kclvm_scope_new();
+
+declare void @kclvm_scope_set(%kclvm_context_t* %_ctx, %kclvm_eval_scope_t* %scope, i8* %pkg, i8* %name, %kclvm_value_ref_t* %value);
+
+declare %kclvm_value_ref_t* @kclvm_template_execute(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
+
+declare %kclvm_value_ref_t* @kclvm_template_html_escape(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
 declare %kclvm_value_ref_t* @kclvm_units_to_G(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
 
@@ -570,7 +600,7 @@ declare void @kclvm_value_remove_item(%kclvm_value_ref_t* %a, %kclvm_value_ref_t
 
 declare %kclvm_value_ref_t* @kclvm_value_schema_function(%kclvm_context_t* %ctx, i64* %fn_ptr, i64* %check_fn_ptr, %kclvm_value_ref_t* %attr_map, %kclvm_char_t* %tpe);
 
-declare %kclvm_value_ref_t* @kclvm_value_schema_with_config(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %schema_dict, %kclvm_value_ref_t* %config, %kclvm_value_ref_t* %config_meta, %kclvm_char_t* %name, %kclvm_char_t* %pkgpath, %kclvm_value_ref_t* %is_sub_schema, %kclvm_value_ref_t* %record_instance, %kclvm_value_ref_t* %instance_pkgpath, %kclvm_value_ref_t* %optional_mapping);
+declare %kclvm_value_ref_t* @kclvm_value_schema_with_config(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %schema_dict, %kclvm_value_ref_t* %config, %kclvm_value_ref_t* %config_meta, %kclvm_char_t* %name, %kclvm_char_t* %pkgpath, %kclvm_value_ref_t* %is_sub_schema, %kclvm_value_ref_t* %record_instance, %kclvm_value_ref_t* %instance_pkgpath, %kclvm_value_ref_t* %optional_mapping, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
 declare %kclvm_value_ref_t* @kclvm_value_slice(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %x, %kclvm_value_ref_t* %a, %kclvm_value_ref_t* %b, %kclvm_value_ref_t* %step);
 
@@ -604,9 +634,9 @@ declare %kclvm_value_ref_t* @kclvm_yaml_decode(%kclvm_context_t* %ctx, %kclvm_va
 
 declare %kclvm_value_ref_t* @kclvm_yaml_decode_all(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
 
-declare %kclvm_value_ref_t* @kclvm_yaml_dump_all_to_file(%kclvm_context_t* %_ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
+declare %kclvm_value_ref_t* @kclvm_yaml_dump_all_to_file(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
-declare %kclvm_value_ref_t* @kclvm_yaml_dump_to_file(%kclvm_context_t* %_ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
+declare %kclvm_value_ref_t* @kclvm_yaml_dump_to_file(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 
 declare %kclvm_value_ref_t* @kclvm_yaml_encode(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs);
 

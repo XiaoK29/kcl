@@ -131,9 +131,15 @@ impl<'a> Parser<'a> {
                     let v = lit.symbol.as_str().parse::<i64>().unwrap();
                     if let Some(suffix) = lit.suffix {
                         let x = ast::NumberBinarySuffix::try_from(suffix.as_str().as_str());
-                        ast::LiteralType::Int(v, Some(x.unwrap()))
+                        ast::LiteralType::Int(ast::IntLiteralType {
+                            value: v,
+                            suffix: Some(x.unwrap()),
+                        })
                     } else {
-                        ast::LiteralType::Int(v, None)
+                        ast::LiteralType::Int(ast::IntLiteralType {
+                            value: v,
+                            suffix: None,
+                        })
                     }
                 }
                 token::LitKind::Float => {
@@ -234,7 +240,7 @@ impl<'a> Parser<'a> {
                 }
             }
             // If there is no params type, set it to None
-            let params_ty = if params_type.len() == 0 {
+            let params_ty = if params_type.is_empty() {
                 None
             } else {
                 Some(params_type)

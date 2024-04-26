@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::{
     cell::RefCell,
     rc::{Rc, Weak},
@@ -23,6 +24,7 @@ use kclvm_ast::ast::AstIndex;
 use kclvm_ast::pos::ContainsPos;
 use kclvm_ast::pos::GetPos;
 use kclvm_error::Position;
+use serde::Serialize;
 
 /// The object stored in the scope.
 #[derive(PartialEq, Clone, Debug)]
@@ -282,11 +284,14 @@ impl Scope {
 pub struct ProgramScope {
     pub scope_map: IndexMap<String, Rc<RefCell<Scope>>>,
     pub import_names: IndexMap<String, IndexMap<String, String>>,
-    pub node_ty_map: IndexMap<AstIndex, TypeRef>,
+    pub node_ty_map: NodeTyMap,
     pub handler: Handler,
 }
 
 unsafe impl Send for ProgramScope {}
+
+unsafe impl Send for Scope {}
+unsafe impl Sync for Scope {}
 
 impl ProgramScope {
     /// Get all package paths.
@@ -431,13 +436,14 @@ impl<'ctx> Resolver<'ctx> {
                 if suggs.len() > 0 {
                     suggestion = format!(", did you mean '{:?}'?", suggs);
                 }
-                self.handler.add_compile_error(
+                self.handler.add_compile_error_with_suggestions(
                     &format!(
                         "name '{}' is not defined{}",
                         name.replace('@', ""),
                         suggestion
                     ),
                     range,
+                    Some(suggs.clone()),
                 );
                 self.any_ty()
             }
@@ -451,7 +457,8 @@ impl<'ctx> Resolver<'ctx> {
             Some(obj) => {
                 let mut obj = obj.borrow_mut();
                 let infer_ty = self.ctx.ty_ctx.infer_to_variable_type(ty);
-                self.node_ty_map.insert(node.id.clone(), infer_ty.clone());
+                self.node_ty_map
+                    .insert(self.get_node_key(node.id.clone()), infer_ty.clone());
                 obj.ty = infer_ty;
             }
             None => {
@@ -477,7 +484,23 @@ impl<'ctx> Resolver<'ctx> {
     pub fn contains_object(&mut self, name: &str) -> bool {
         self.scope.borrow().elems.contains_key(name)
     }
+
+    pub fn get_node_key(&self, id: AstIndex) -> NodeKey {
+        NodeKey {
+            pkgpath: self.ctx.pkgpath.clone(),
+            id,
+        }
+    }
 }
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize)]
+pub struct NodeKey {
+    pub pkgpath: String,
+    pub id: AstIndex,
+}
+
+pub type NodeTyMap = IndexMap<NodeKey, TypeRef>;
+pub type KCLScopeCache = Arc<Mutex<CachedScope>>;
 
 /// For CachedScope, we assume that all changed files must be located in kclvm_ast::MAIN_PKG ,
 /// if this is not the case, please clear the cache directly
@@ -485,11 +508,14 @@ impl<'ctx> Resolver<'ctx> {
 pub struct CachedScope {
     pub program_root: String,
     pub scope_map: IndexMap<String, Rc<RefCell<Scope>>>,
-    pub node_ty_map: IndexMap<ast::AstIndex, TypeRef>,
+    pub node_ty_map: NodeTyMap,
     dependency_graph: DependencyGraph,
 }
-#[derive(Debug, Clone, Default)]
 
+unsafe impl Send for CachedScope {}
+unsafe impl Sync for CachedScope {}
+
+#[derive(Debug, Clone, Default)]
 struct DependencyGraph {
     /// map filename to pkgpath
     pub module_map: HashMap<String, HashSet<String>>,
@@ -539,7 +565,9 @@ impl DependencyGraph {
         if let Some(main_modules) = program.pkgs.get(kclvm_ast::MAIN_PKG) {
             for module in main_modules {
                 let result = self.invalidate_module(module)?;
-                let _ = result.into_iter().map(|pkg| invalidated_set.insert(pkg));
+                for pkg in result {
+                    invalidated_set.insert(pkg);
+                }
                 self.remove_dependency_from_pkg(&module.filename);
                 self.add_new_module(module);
             }
@@ -552,7 +580,7 @@ impl DependencyGraph {
         if let Some(pkgpaths) = self.module_map.get(&module_file) {
             for stmt in &new_module.body {
                 if let ast::Stmt::Import(import_stmt) = &stmt.node {
-                    let parent_pkg = &import_stmt.path;
+                    let parent_pkg = &import_stmt.path.node;
                     if let Some(parent_node) = self.node_map.get_mut(parent_pkg) {
                         parent_node.children.insert(new_module.filename.clone());
                     }
@@ -574,13 +602,12 @@ impl DependencyGraph {
         if let Some(pkgpaths) = self.module_map.get(&module_file).cloned() {
             let mut pkg_queue = VecDeque::new();
             for pkgpath in pkgpaths.iter() {
-                invalidated_set.insert(pkgpath.clone());
                 pkg_queue.push_back(self.node_map.get(pkgpath));
             }
 
-            let mut old_size = 0;
-            while old_size < invalidated_set.len() {
-                old_size = invalidated_set.len();
+            let mut old_size: i64 = -1;
+            while old_size < invalidated_set.len() as i64 {
+                old_size = invalidated_set.len() as i64;
                 let cur_node = loop {
                     match pkg_queue.pop_front() {
                         Some(cur_node) => match cur_node {
@@ -627,12 +654,14 @@ impl DependencyGraph {
         }
     }
 }
+
 #[derive(Debug, Clone, Default)]
 struct DependencyNode {
+    // The package path of the current node.
     pkgpath: String,
-    //the pkgpath which is imported by this pkg
+    // The pkgpath which is imported by this package.
     parents: HashSet<String>,
-    //the files which import this pkg
+    // Files which import this package.
     children: HashSet<String>,
 }
 
@@ -645,7 +674,7 @@ impl CachedScope {
             dependency_graph: DependencyGraph::default(),
         };
         let invalidated_pkgs = cached_scope.dependency_graph.update(program);
-        cached_scope.invalidte_cache(invalidated_pkgs.as_ref());
+        cached_scope.invalidate_cache(invalidated_pkgs.as_ref());
         cached_scope
     }
 
@@ -655,7 +684,7 @@ impl CachedScope {
         self.dependency_graph.clear();
     }
 
-    pub fn invalidte_cache(&mut self, invalidated_pkgs: Result<&HashSet<String>, &String>) {
+    pub fn invalidate_cache(&mut self, invalidated_pkgs: Result<&HashSet<String>, &String>) {
         match invalidated_pkgs {
             Ok(invalidated_pkgs) => {
                 for invalidated_pkg in invalidated_pkgs.iter() {
@@ -672,6 +701,6 @@ impl CachedScope {
             self.program_root = program.root.clone();
         }
         let invalidated_pkgs = self.dependency_graph.update(program);
-        self.invalidte_cache(invalidated_pkgs.as_ref());
+        self.invalidate_cache(invalidated_pkgs.as_ref());
     }
 }

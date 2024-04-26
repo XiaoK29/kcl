@@ -2,17 +2,17 @@ use anyhow::Result;
 use compiler_base_macros::bug;
 use indexmap::IndexMap;
 use kclvm_ast::ast::{self, Program};
-use kclvm_compiler::codegen::{
-    llvm::{emit_code, OBJECT_FILE_SUFFIX},
-    EmitOptions,
-};
-use kclvm_config::cache::{load_pkg_cache, save_pkg_cache, CacheOption};
+use kclvm_compiler::codegen::{emit_code, EmitOptions, OBJECT_FILE_SUFFIX};
+use kclvm_config::cache::{load_pkg_cache, save_pkg_cache, CacheOption, KCL_CACHE_PATH_ENV_VAR};
 use kclvm_sema::resolver::scope::ProgramScope;
+use kclvm_utils::fslock::open_lock_file;
 use std::{
     collections::HashMap,
     env,
     path::{Path, PathBuf},
 };
+
+use crate::ExecProgramArgs;
 
 /// IR code file suffix.
 const DEFAULT_IR_FILE: &str = "_a.out";
@@ -54,12 +54,15 @@ pub(crate) trait LibAssembler {
     ///
     /// "object_file_path" is the full filename of the generated intermediate code file with suffix.
     /// e.g. code_file_path : "/test_dir/test_code_file.o"
+    ///
+    /// "arg" is the arguments of the kclvm runtime.   
     fn assemble(
         &self,
         compile_prog: &Program,
         import_names: IndexMap<String, IndexMap<String, String>>,
         code_file: &str,
         code_file_path: &str,
+        arg: &ExecProgramArgs,
     ) -> Result<String>;
 
     /// Clean cache lock files.
@@ -90,13 +93,15 @@ impl LibAssembler for KclvmLibAssembler {
         import_names: IndexMap<String, IndexMap<String, String>>,
         code_file: &str,
         object_file_path: &str,
+        args: &ExecProgramArgs,
     ) -> Result<String> {
         match &self {
-            KclvmLibAssembler::LLVM => LlvmLibAssembler::default().assemble(
+            KclvmLibAssembler::LLVM => LlvmLibAssembler.assemble(
                 compile_prog,
                 import_names,
                 code_file,
                 object_file_path,
+                args,
             ),
         }
     }
@@ -104,14 +109,14 @@ impl LibAssembler for KclvmLibAssembler {
     #[inline]
     fn add_code_file_suffix(&self, code_file: &str) -> String {
         match &self {
-            KclvmLibAssembler::LLVM => LlvmLibAssembler::default().add_code_file_suffix(code_file),
+            KclvmLibAssembler::LLVM => LlvmLibAssembler.add_code_file_suffix(code_file),
         }
     }
 
     #[inline]
     fn get_code_file_suffix(&self) -> String {
         match &self {
-            KclvmLibAssembler::LLVM => LlvmLibAssembler::default().get_code_file_suffix(),
+            KclvmLibAssembler::LLVM => LlvmLibAssembler.get_code_file_suffix(),
         }
     }
 }
@@ -145,6 +150,7 @@ impl LibAssembler for LlvmLibAssembler {
         import_names: IndexMap<String, IndexMap<String, String>>,
         code_file: &str,
         object_file_path: &str,
+        arg: &ExecProgramArgs,
     ) -> Result<String> {
         // Clean the existed "*.o" object file.
         clean_path(object_file_path)?;
@@ -152,6 +158,7 @@ impl LibAssembler for LlvmLibAssembler {
         // Compile KCL code into ".o" object file.
         emit_code(
             compile_prog,
+            arg.work_dir.clone().unwrap_or("".to_string()),
             import_names,
             &EmitOptions {
                 from_path: None,
@@ -243,8 +250,8 @@ impl KclvmAssembler {
     /// Generate cache dir from the program root path.
     /// Create cache dir if it doesn't exist.
     #[inline]
-    pub(crate) fn load_cache_dir(&self, prog_root_name: &str) -> Result<PathBuf> {
-        let cache_dir = self.construct_cache_dir(prog_root_name);
+    pub(crate) fn load_cache_dir(&self, root: &str) -> Result<PathBuf> {
+        let cache_dir = self.construct_cache_dir(root);
         if !cache_dir.exists() {
             std::fs::create_dir_all(&cache_dir)?;
         }
@@ -252,8 +259,9 @@ impl KclvmAssembler {
     }
 
     #[inline]
-    pub(crate) fn construct_cache_dir(&self, prog_root_name: &str) -> PathBuf {
-        Path::new(prog_root_name)
+    pub(crate) fn construct_cache_dir(&self, root: &str) -> PathBuf {
+        let root = std::env::var(KCL_CACHE_PATH_ENV_VAR).unwrap_or(root.to_string());
+        Path::new(&root)
             .join(".kclvm")
             .join("cache")
             .join(kclvm_version::get_version_string())
@@ -270,7 +278,7 @@ impl KclvmAssembler {
     ///
     /// `gen_libs` will create multiple threads and call the method provided by [KclvmLibAssembler] in each thread
     /// to generate the dynamic link library in parallel.
-    pub(crate) fn gen_libs(self) -> Result<Vec<String>> {
+    pub(crate) fn gen_libs(self, args: &ExecProgramArgs) -> Result<Vec<String>> {
         self.clean_path_for_genlibs(
             DEFAULT_IR_FILE,
             &self.single_file_assembler.get_code_file_suffix(),
@@ -289,7 +297,6 @@ impl KclvmAssembler {
             pkgs.insert(pkgpath.clone(), modules);
             let compile_prog = ast::Program {
                 root: self.program.root.clone(),
-                main: self.program.main.clone(),
                 pkgs,
             };
             compile_progs.insert(
@@ -324,7 +331,7 @@ impl KclvmAssembler {
             let target = self.target.clone();
             {
                 // Locking file for parallel code generation.
-                let mut file_lock = fslock::LockFile::open(&lock_file_path)?;
+                let mut file_lock = open_lock_file(&lock_file_path)?;
                 file_lock.lock()?;
 
                 let root = &compile_prog.root;
@@ -336,7 +343,13 @@ impl KclvmAssembler {
                 // written.
                 let file_path = if is_main_pkg {
                     // generate dynamic link library for single file kcl program
-                    assembler.assemble(&compile_prog, import_names, &code_file, &code_file_path)?
+                    assembler.assemble(
+                        &compile_prog,
+                        import_names,
+                        &code_file,
+                        &code_file_path,
+                        args,
+                    )?
                 } else {
                     // Read the lib path cache
                     let file_relative_path: Option<String> = load_pkg_cache(
@@ -370,6 +383,7 @@ impl KclvmAssembler {
                                 import_names,
                                 &code_file,
                                 &code_file_path,
+                                args,
                             )?;
                             let lib_relative_path = file_path.replacen(root, ".", 1);
                             let _ = save_pkg_cache(

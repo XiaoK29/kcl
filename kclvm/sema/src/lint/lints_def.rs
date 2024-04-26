@@ -110,7 +110,7 @@ impl LintPass for UnusedImport {
                                 style: Style::Line,
                                 message: format!("Module '{}' imported but unused", scope_obj.name),
                                 note: Some("Consider removing this statement".to_string()),
-                                suggested_replacement: Some("".to_string()),
+                                suggested_replacement: None,
                             }],
                         );
                     }
@@ -154,7 +154,7 @@ impl LintPass for ReImport {
         let mut import_names = IndexSet::<String>::new();
         for stmt in &module.body {
             if let ast::Stmt::Import(import_stmt) = &stmt.node {
-                if import_names.contains(&import_stmt.path) {
+                if import_names.contains(&import_stmt.path.node) {
                     handler.add_warning(
                         WarningKind::ReimportWarning,
                         &[Message {
@@ -165,11 +165,11 @@ impl LintPass for ReImport {
                                 &import_stmt.name
                             ),
                             note: Some("Consider removing this statement".to_string()),
-                            suggested_replacement: Some("".to_string()),
+                            suggested_replacement: None,
                         }],
                     );
                 } else {
-                    import_names.insert(import_stmt.path.clone());
+                    import_names.insert(import_stmt.path.node.clone());
                 }
             }
         }

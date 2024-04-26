@@ -1,3 +1,4 @@
+use kclvm_config::{modfile::KCL_MOD_FILE, settings::DEFAULT_SETTING_FILE};
 use lsp_types::notification::{
     Cancel, DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument,
     DidOpenTextDocument, DidSaveTextDocument,
@@ -9,7 +10,7 @@ use crate::{
     from_lsp,
     state::LanguageServerState,
     util::apply_document_changes,
-    util::{build_word_index_for_file_content, word_index_add, word_index_subtract},
+    word_index::{build_word_index_with_content, word_index_add, word_index_subtract},
 };
 
 impl LanguageServerState {
@@ -17,7 +18,6 @@ impl LanguageServerState {
         &mut self,
         notification: lsp_server::Notification,
     ) -> anyhow::Result<()> {
-        self.log_message(format!("on notification {:?}", notification));
         NotificationDispatcher::new(self, notification)
             .on::<DidOpenTextDocument>(LanguageServerState::on_did_open_text_document)?
             .on::<DidChangeTextDocument>(LanguageServerState::on_did_change_text_document)?
@@ -52,7 +52,9 @@ impl LanguageServerState {
         );
 
         if let Some(id) = self.vfs.read().file_id(&path.into()) {
-            self.opened_files.insert(id);
+            self.opened_files
+                .write()
+                .insert(id, params.text_document.version);
         }
         Ok(())
     }
@@ -85,7 +87,7 @@ impl LanguageServerState {
         let path = from_lsp::abs_path(&text_document.uri)?;
         self.log_message(format!("on did_change file: {:?}", path));
 
-        // update vfs
+        // Update vfs
         let vfs = &mut *self.vfs.write();
         let file_id = vfs
             .file_id(&path.clone().into())
@@ -96,12 +98,11 @@ impl LanguageServerState {
         apply_document_changes(&mut text, content_changes);
         vfs.set_file_contents(path.into(), Some(text.clone().into_bytes()));
 
-        // update word index
-        let old_word_index = build_word_index_for_file_content(old_text, &text_document.uri, true);
-        let new_word_index =
-            build_word_index_for_file_content(text.clone(), &text_document.uri, true);
+        // Update word index
+        let old_word_index = build_word_index_with_content(&old_text, &text_document.uri, true);
+        let new_word_index = build_word_index_with_content(&text, &text_document.uri, true);
         let binding = from_lsp::file_path_from_url(&text_document.uri)?;
-        let file_path = Path::new(&binding); //todo rename
+        let file_path = Path::new(&binding);
         let word_index_map = &mut *self.word_index_map.write();
         for (key, value) in word_index_map {
             let workspace_folder_path = Path::new(key.path());
@@ -120,10 +121,15 @@ impl LanguageServerState {
         params: lsp_types::DidCloseTextDocumentParams,
     ) -> anyhow::Result<()> {
         let path = from_lsp::abs_path(&params.text_document.uri)?;
+        self.log_message(format!("on did_close file: {:?}", path));
 
         if let Some(id) = self.vfs.read().file_id(&path.clone().into()) {
-            self.opened_files.remove(&id);
+            self.opened_files.write().remove(&id);
         }
+
+        // Update vfs
+        let vfs = &mut *self.vfs.write();
+        vfs.set_file_contents(path.clone().into(), None);
         self.loader.handle.invalidate(path);
 
         Ok(())
@@ -136,8 +142,14 @@ impl LanguageServerState {
     ) -> anyhow::Result<()> {
         for change in params.changes {
             let path = from_lsp::abs_path(&change.uri)?;
-            self.loader.handle.invalidate(path);
+            self.loader.handle.invalidate(path.clone());
+            if KCL_CONFIG_FILE.contains(&path.file_name().unwrap().to_str().unwrap()) {
+                self.compile_unit_cache.write().clear();
+            }
         }
+
         Ok(())
     }
 }
+
+const KCL_CONFIG_FILE: [&'static str; 2] = [DEFAULT_SETTING_FILE, KCL_MOD_FILE];

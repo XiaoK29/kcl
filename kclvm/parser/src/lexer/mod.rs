@@ -436,6 +436,14 @@ impl<'a> Lexer<'a> {
                 );
                 return None;
             }
+            kclvm_lexer::TokenKind::Semi => {
+                // If we encounter an illegal semi token ';', raise a friendly error.
+                self.sess.struct_span_error(
+                    "the semicolon ';' here is unnecessary, please remove it",
+                    self.span(start, self.pos),
+                );
+                return None;
+            }
             _ => {
                 self.sess
                     .struct_span_error("unknown start of token", self.span(start, self.pos));
@@ -457,8 +465,9 @@ impl<'a> Lexer<'a> {
             // and the multi-character tokens that need to be lexed in ['kclvm-parser/lexer'] are only token '->'.
             // If a new multi-character token is added later, the corresponding operation can be added here.
             kclvm_lexer::TokenKind::Gt => {
-                if let Some(_) =
-                    tok_stream_builder.pop_if_tok_kind(&TokenKind::BinOp(BinOpToken::Minus))
+                if tok_stream_builder
+                    .pop_if_tok_kind(&TokenKind::BinOp(BinOpToken::Minus))
+                    .is_some()
                 {
                     // After the previous token pops up, 'self.tok_start_pos' needs to be updated.
                     if self.tok_start_pos >= new_byte_pos(1) {

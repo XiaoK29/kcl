@@ -1,4 +1,4 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
 
 use crate::unification::value_subsume;
 use crate::*;
@@ -6,11 +6,11 @@ use crate::*;
 /// UnionContext records some information during the value merging process,
 /// including the merging path and whether there are conflicts.
 #[derive(Default, Debug)]
-struct UnionContext {
-    path_backtrace: Vec<String>,
-    conflict: bool,
-    obj_json: String,
-    delta_json: String,
+pub struct UnionContext {
+    pub path_backtrace: Vec<String>,
+    pub conflict: bool,
+    pub obj_json: String,
+    pub delta_json: String,
 }
 
 /// UnionOptions denotes the union options between runtime values.
@@ -47,6 +47,8 @@ impl ValueRef {
         }
 
         let mut union_fn = |obj: &mut DictValue, delta: &DictValue| {
+            // Update potential schema type
+            obj.potential_schema = delta.potential_schema.clone();
             // Update attribute map
             for (k, v) in &delta.ops {
                 obj.ops.insert(k.clone(), v.clone());
@@ -55,6 +57,7 @@ impl ValueRef {
             for (k, v) in &delta.insert_indexs {
                 obj.insert_indexs.insert(k.clone(), *v);
             }
+            // Update values
             for (k, v) in &delta.values {
                 let operation = if let Some(op) = delta.ops.get(k) {
                     op
@@ -152,6 +155,8 @@ impl ValueRef {
         let mut pkgpath: String = "".to_string();
         let mut name: String = "".to_string();
         let mut common_keys: Vec<String> = vec![];
+        let mut args = None;
+        let mut kwargs = None;
         let mut valid = true;
         match (&mut *self.rc.borrow_mut(), &*x.rc.borrow()) {
             (Value::list_value(obj), Value::list_value(delta)) => {
@@ -190,6 +195,8 @@ impl ValueRef {
                 common_keys = obj.config_keys.clone();
                 let mut other_keys: Vec<String> = delta.values.keys().cloned().collect();
                 common_keys.append(&mut other_keys);
+                args = Some(obj.args.clone());
+                kwargs = Some(obj.kwargs.clone());
                 union_schema = true;
             }
             (Value::schema_value(obj), Value::schema_value(delta)) => {
@@ -201,6 +208,8 @@ impl ValueRef {
                 common_keys = obj.config_keys.clone();
                 let mut other_keys: Vec<String> = delta.config_keys.clone();
                 common_keys.append(&mut other_keys);
+                args = Some(delta.args.clone());
+                kwargs = Some(delta.kwargs.clone());
                 union_schema = true;
             }
             (Value::dict_value(obj), Value::schema_value(delta)) => {
@@ -211,6 +220,8 @@ impl ValueRef {
                 common_keys = delta.config_keys.clone();
                 let mut other_keys: Vec<String> = obj.values.keys().cloned().collect();
                 common_keys.append(&mut other_keys);
+                args = Some(delta.args.clone());
+                kwargs = Some(delta.kwargs.clone());
                 union_schema = true;
             }
             _ => valid = false,
@@ -226,14 +237,24 @@ impl ValueRef {
             return self.clone();
         }
         if union_schema {
-            let result = self.clone();
-            let optional_mapping = self.schema_optional_mapping();
+            // Override schema arguments and keyword arguments.
+            let mut result = self.clone();
+            if let (Some(args), Some(kwargs)) = (&args, &kwargs) {
+                result.set_schema_args(args, kwargs);
+            }
+            let optional_mapping = if self.is_schema() {
+                self.schema_optional_mapping()
+            } else {
+                x.schema_optional_mapping()
+            };
             let schema = result.dict_to_schema(
                 name.as_str(),
                 pkgpath.as_str(),
                 &common_keys,
                 &x.schema_config_meta(),
                 &optional_mapping,
+                args,
+                kwargs,
             );
             if opts.config_resolve {
                 *self = resolve_schema(ctx, &schema, &common_keys);

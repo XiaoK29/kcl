@@ -31,11 +31,9 @@
 //! :note: When the definition of any AST node is modified or the AST node
 //! is added/deleted, it is necessary to modify the corresponding processing
 //! in the compiler and regenerate the walker code.
-//! :copyright: Copyright 2020 The KCL Authors. All rights reserved.
-//!
-//! todo: remove type_str fields after python frontend removed.
+//! :copyright: Copyright The KCL Authors. All rights reserved.
 
-use serde::{Deserialize, Serialize};
+use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 use std::collections::HashMap;
 
 use compiler_base_span::{Loc, Span};
@@ -45,6 +43,11 @@ use uuid;
 use super::token;
 use crate::{node_ref, pos::ContainsPos};
 use kclvm_error::{diagnostic::Range, Position};
+use std::cell::RefCell;
+
+thread_local! {
+    static SHOULD_SERIALIZE_ID: RefCell<bool> = RefCell::new(false);
+}
 
 /// PosTuple denotes the tuple `(filename, line, column, end_line, end_column)`.
 pub type PosTuple = (String, u64, u64, u64, u64);
@@ -58,24 +61,24 @@ impl From<PosTuple> for Pos {
     }
 }
 
-impl Into<PosTuple> for Pos {
-    fn into(self) -> PosTuple {
-        (self.0, self.1, self.2, self.3, self.4)
+impl From<Pos> for PosTuple {
+    fn from(val: Pos) -> Self {
+        (val.0, val.1, val.2, val.3, val.4)
     }
 }
 
-impl Into<Range> for Pos {
-    fn into(self) -> Range {
+impl From<Pos> for Range {
+    fn from(val: Pos) -> Self {
         (
             Position {
-                filename: self.0.clone(),
-                line: self.1,
-                column: Some(self.2),
+                filename: val.0.clone(),
+                line: val.1,
+                column: Some(val.2),
             },
             Position {
-                filename: self.0,
-                line: self.3,
-                column: Some(self.4),
+                filename: val.0,
+                line: val.3,
+                column: Some(val.4),
             },
         )
     }
@@ -84,18 +87,34 @@ impl Into<Range> for Pos {
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct AstIndex(uuid::Uuid);
 
+impl Serialize for AstIndex {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
 impl Default for AstIndex {
     fn default() -> Self {
         Self(uuid::Uuid::new_v4())
     }
 }
+
+impl ToString for AstIndex {
+    fn to_string(&self) -> String {
+        self.0.to_string()
+    }
+}
+
 /// Node is the file, line and column number information
 /// that all AST nodes need to contain.
 /// In fact, column and end_column are the counts of character,
 /// For example, `\t` is counted as 1 character, so it is recorded as 1 here, but generally col is 4.
-#[derive(Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Deserialize, Clone, PartialEq)]
 pub struct Node<T> {
-    #[serde(skip_serializing, skip_deserializing, default)]
+    #[serde(serialize_with = "serialize_id", skip_deserializing, default)]
     pub id: AstIndex,
     pub node: T,
     pub filename: String,
@@ -103,6 +122,33 @@ pub struct Node<T> {
     pub column: u64,
     pub end_line: u64,
     pub end_column: u64,
+}
+
+impl<T: Serialize> Serialize for Node<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let should_serialize_id = SHOULD_SERIALIZE_ID.with(|f| *f.borrow());
+        let mut state =
+            serializer.serialize_struct("Node", if should_serialize_id { 7 } else { 6 })?;
+        if should_serialize_id {
+            state.serialize_field("id", &self.id)?;
+        }
+        state.serialize_field("node", &self.node)?;
+        state.serialize_field("filename", &self.filename)?;
+        state.serialize_field("line", &self.line)?;
+        state.serialize_field("column", &self.column)?;
+        state.serialize_field("end_line", &self.end_line)?;
+        state.serialize_field("end_column", &self.end_column)?;
+        state.end()
+    }
+}
+
+pub fn set_should_serialize_id(value: bool) {
+    SHOULD_SERIALIZE_ID.with(|f| {
+        *f.borrow_mut() = value;
+    });
 }
 
 impl<T: Debug> Debug for Node<T> {
@@ -316,7 +362,6 @@ pub struct SymbolSelectorSpec {
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct Program {
     pub root: String,
-    pub main: String,
     pub pkgs: HashMap<String, Vec<Module>>,
 }
 
@@ -326,6 +371,13 @@ impl Program {
         match self.pkgs.get(crate::MAIN_PKG) {
             Some(modules) => modules.iter().map(|m| m.filename.clone()).collect(),
             None => vec![],
+        }
+    }
+    /// Get the first module in the main package.
+    pub fn get_main_package_first_module(&self) -> Option<&Module> {
+        match self.pkgs.get(crate::MAIN_PKG) {
+            Some(modules) => modules.first(),
+            None => None,
         }
     }
     /// Get stmt on position
@@ -342,7 +394,7 @@ impl Program {
 }
 
 /// Module is an abstract syntax tree for a single KCL file.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct Module {
     pub filename: String,
     pub pkg: String,
@@ -361,7 +413,7 @@ impl Module {
                 stmts.push(node_ref!(schema_stmt.clone(), stmt.pos()));
             }
         }
-        return stmts;
+        stmts
     }
 
     /// Get stmt on position
@@ -381,6 +433,7 @@ impl Module {
 
 /// A statement
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(tag = "type")]
 pub enum Stmt {
     TypeAlias(TypeAliasStmt),
     Expr(ExprStmt),
@@ -435,8 +488,6 @@ pub struct UnificationStmt {
 pub struct AssignStmt {
     pub targets: Vec<NodeRef<Identifier>>,
     pub value: NodeRef<Expr>,
-    pub type_annotation: Option<NodeRef<String>>,
-
     pub ty: Option<NodeRef<Type>>,
 }
 
@@ -486,10 +537,10 @@ pub struct IfStmt {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ImportStmt {
     /// `path` is the import path, if 'import a.b.c' in kcl, `path` is a.b.c
-    pub path: String,
+    pub path: Node<String>,
     pub rawpath: String,
     pub name: String,
-    pub asname: Option<String>,
+    pub asname: Option<Node<String>>,
     /// `pkg_name` means the name of the package that the current import statement indexs to.
     ///
     /// 1. If the current import statement indexs to the kcl plugins, kcl builtin methods or the internal kcl packages,
@@ -608,11 +659,9 @@ impl SchemaStmt {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct SchemaIndexSignature {
     pub key_name: Option<String>,
-    pub key_type: NodeRef<String>,
-    pub value_type: NodeRef<String>,
     pub value: Option<NodeRef<Expr>>,
     pub any_other: bool,
-
+    pub key_ty: NodeRef<Type>,
     pub value_ty: NodeRef<Type>,
 }
 
@@ -626,13 +675,19 @@ pub struct SchemaIndexSignature {
 pub struct SchemaAttr {
     pub doc: String,
     pub name: NodeRef<String>,
-    pub type_str: NodeRef<String>,
-    pub op: Option<BinOrAugOp>,
+    pub op: Option<AugOp>,
     pub value: Option<NodeRef<Expr>>,
     pub is_optional: bool,
     pub decorators: Vec<NodeRef<CallExpr>>,
 
     pub ty: NodeRef<Type>,
+}
+
+impl SchemaAttr {
+    #[inline]
+    pub fn is_ident_attr(&self) -> bool {
+        self.name.end_column - self.name.column <= self.name.node.chars().count() as u64
+    }
 }
 
 /// RuleStmt, e.g.
@@ -654,6 +709,7 @@ pub struct RuleStmt {
 
 /// A expression
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(tag = "type")]
 pub enum Expr {
     Identifier(Identifier),
     Unary(UnaryExpr),
@@ -685,6 +741,43 @@ pub enum Expr {
     FormattedValue(FormattedValue),
     /// A place holder for expression parse error.
     Missing(MissingExpr),
+}
+
+impl Expr {
+    pub fn get_expr_name(&self) -> String {
+        match self {
+            Expr::Identifier(_) => "IdentifierExpression",
+            Expr::Unary(_) => "UnaryExpression",
+            Expr::Binary(_) => "BinaryExpression",
+            Expr::If(_) => "IfExpression",
+            Expr::Selector(_) => "SelectorExpression",
+            Expr::Call(_) => "CallExpression",
+            Expr::Paren(_) => "ParenExpression",
+            Expr::Quant(_) => "QuantExpression",
+            Expr::List(_) => "ListExpression",
+            Expr::ListIfItem(_) => "ListIfItemExpression",
+            Expr::ListComp(_) => "ListCompExpression",
+            Expr::Starred(_) => "StarredExpression",
+            Expr::DictComp(_) => "DictCompExpression",
+            Expr::ConfigIfEntry(_) => "ConfigIfEntryExpression",
+            Expr::CompClause(_) => "CompClauseExpression",
+            Expr::Schema(_) => "SchemaExpression",
+            Expr::Config(_) => "ConfigExpression",
+            Expr::Check(_) => "CheckExpression",
+            Expr::Lambda(_) => "LambdaExpression",
+            Expr::Subscript(_) => "SubscriptExpression",
+            Expr::Keyword(_) => "KeywordExpression",
+            Expr::Arguments(_) => "ArgumentsExpression",
+            Expr::Compare(_) => "CompareExpression",
+            Expr::NumberLit(_) => "NumberLitExpression",
+            Expr::StringLit(_) => "StringLitExpression",
+            Expr::NameConstantLit(_) => "NameConstantLitExpression",
+            Expr::JoinedString(_) => "JoinedStringExpression",
+            Expr::FormattedValue(_) => "FormattedValueExpression",
+            Expr::Missing(_) => "MissingExpression",
+        }
+        .to_string()
+    }
 }
 
 /// Identifier, e.g.
@@ -737,7 +830,7 @@ pub struct UnaryExpr {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct BinaryExpr {
     pub left: NodeRef<Expr>,
-    pub op: BinOrCmpOp,
+    pub op: BinOp,
     pub right: NodeRef<Expr>,
 }
 
@@ -846,6 +939,7 @@ pub struct ListIfItemExpr {
     pub orelse: Option<NodeRef<Expr>>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum CompType {
     List,
     Dict,
@@ -996,9 +1090,7 @@ pub struct CheckExpr {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct LambdaExpr {
     pub args: Option<NodeRef<Arguments>>,
-    pub return_type_str: Option<String>,
     pub body: Vec<NodeRef<Stmt>>,
-
     pub return_ty: Option<NodeRef<Type>>,
 }
 
@@ -1039,9 +1131,6 @@ pub struct Keyword {
 pub struct Arguments {
     pub args: Vec<NodeRef<Identifier>>,
     pub defaults: Vec<Option<NodeRef<Expr>>>,
-    pub type_annotation_list: Vec<Option<NodeRef<String>>>,
-
-    #[serde(default)]
     pub ty_list: Vec<Option<NodeRef<Type>>>,
 }
 
@@ -1086,6 +1175,7 @@ pub struct Compare {
 /// """long string literal"""
 /// ```
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(tag = "type")]
 pub enum Literal {
     Number(NumberLit),
     String(StringLit),
@@ -1149,6 +1239,7 @@ impl NumberBinarySuffix {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(tag = "type", content = "value")]
 pub enum NumberLitValue {
     Int(i64),
     Float(f64),
@@ -1514,16 +1605,10 @@ impl CmpOp {
 
 /// BinOrCmpOp is the set of all binary and comparison operators in KCL.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(tag = "type")]
 pub enum BinOrCmpOp {
     Bin(BinOp),
     Cmp(CmpOp),
-}
-
-/// BinOrAugOp is the set of all binary and argument operators in KCL.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub enum BinOrAugOp {
-    Bin(BinOp),
-    Aug(AugOp),
 }
 
 /// ExprContext represents the location information of the AST node.
@@ -1537,6 +1622,7 @@ pub enum ExprContext {
 
 /// A expression
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(tag = "type", content = "value")]
 pub enum Type {
     Any,
     Named(Identifier),
@@ -1579,11 +1665,18 @@ pub struct UnionType {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(tag = "type", content = "value")]
 pub enum LiteralType {
     Bool(bool),
-    Int(i64, Option<NumberBinarySuffix>), // value + suffix
+    Int(IntLiteralType), // value + suffix
     Float(f64),
     Str(String),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct IntLiteralType {
+    pub value: i64,
+    pub suffix: Option<NumberBinarySuffix>,
 }
 
 impl ToString for Type {
@@ -1641,7 +1734,7 @@ impl ToString for Type {
                             w.push_str("False");
                         }
                     }
-                    LiteralType::Int(v, suffix) => {
+                    LiteralType::Int(IntLiteralType { value: v, suffix }) => {
                         if let Some(suffix) = suffix {
                             w.push_str(&format!("{}{}", v, suffix.value()));
                         } else {
@@ -1660,7 +1753,7 @@ impl ToString for Type {
                     }
                 },
                 Type::Function(v) => {
-                    w.push_str("(");
+                    w.push('(');
                     if let Some(params) = &v.params_ty {
                         for (i, param) in params.iter().enumerate() {
                             if i > 0 {
@@ -1669,7 +1762,7 @@ impl ToString for Type {
                             to_str(&param.node, w);
                         }
                     }
-                    w.push_str(")");
+                    w.push(')');
                     if let Some(ret) = &v.ret_ty {
                         w.push_str(" -> ");
                         to_str(&ret.node, w);
@@ -1684,6 +1777,17 @@ impl ToString for Type {
     }
 }
 
+impl From<String> for Type {
+    /// Build a named type from the string.
+    fn from(value: String) -> Self {
+        Type::Named(Identifier {
+            names: vec![Node::dummy_node(value)],
+            pkgpath: "".to_string(),
+            ctx: ExprContext::Load,
+        })
+    }
+}
+
 impl From<token::BinOpToken> for AugOp {
     fn from(op_kind: token::BinOpToken) -> Self {
         match op_kind {
@@ -1693,7 +1797,7 @@ impl From<token::BinOpToken> for AugOp {
             token::BinOpToken::Slash => AugOp::Div,
             token::BinOpToken::Percent => AugOp::Mod,
             token::BinOpToken::StarStar => AugOp::Pow,
-            token::BinOpToken::SlashSlash => AugOp::Add,
+            token::BinOpToken::SlashSlash => AugOp::FloorDiv,
             token::BinOpToken::Caret => AugOp::BitXor,
             token::BinOpToken::And => AugOp::BitAnd,
             token::BinOpToken::Or => AugOp::BitOr,

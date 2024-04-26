@@ -3,13 +3,17 @@ use std::collections::HashSet;
 use anyhow::{anyhow, Result};
 
 use compiler_base_macros::bug;
+use kclvm_ast::ast;
 use kclvm_ast::config::try_get_config_expr_mut;
 use kclvm_ast::path::get_key_path;
+use kclvm_ast::walk_list_mut;
 use kclvm_ast::walker::MutSelfMutWalker;
-use kclvm_ast::{ast, walk_if_mut};
+use kclvm_ast::MAIN_PKG;
 use kclvm_ast_pretty::print_ast_module;
 use kclvm_parser::parse_expr;
 use kclvm_sema::pre_process::{fix_config_expr_nest_attr, transform_multi_assign};
+
+use crate::path::parse_attribute_path;
 
 use super::util::{invalid_spec_error, split_field_path};
 
@@ -42,7 +46,7 @@ pub fn apply_overrides(
 ) -> Result<()> {
     for o in overrides {
         let pkgpath = if o.pkgpath.is_empty() {
-            &prog.main
+            MAIN_PKG
         } else {
             &o.pkgpath
         };
@@ -89,10 +93,10 @@ fn build_expr_from_string(value: &str) -> Option<ast::NodeRef<ast::Expr>> {
 /// # Examples
 ///
 /// ```no_check
-/// use kclvm_parser::parse_file;
+/// use kclvm_parser::parse_file_force_errors;
 /// use kclvm_tools::query::apply_override_on_module;
 ///
-/// let mut module = parse_file("", None).unwrap();
+/// let mut module = parse_file_force_errors("", None).unwrap();
 /// let override_spec = parse_override_spec("config.id=1").unwrap();
 /// let import_paths = vec!["path.to.pkg".to_string()];
 /// let result = apply_override_on_module(&mut module, override_spec, &import_paths).unwrap();
@@ -104,16 +108,13 @@ pub fn apply_override_on_module(
 ) -> Result<bool> {
     // Apply import paths on AST module.
     apply_import_paths_on_module(m, import_paths)?;
-    let ss = o.field_path.split('.').collect::<Vec<&str>>();
-    if ss.len() <= 1 {
-        return Ok(false);
-    }
-    let target_id = ss[0];
-    let field = ss[1..].join(".");
+    let ss = parse_attribute_path(&o.field_path)?;
+    let default = String::default();
+    let target_id = ss.get(0).unwrap_or(&default);
     let value = &o.field_value;
     let key = ast::Identifier {
-        names: field
-            .split('.')
+        names: ss[1..]
+            .iter()
             .map(|s| ast::Node::dummy_node(s.to_string()))
             .collect(),
         ctx: ast::ExprContext::Store,
@@ -131,7 +132,7 @@ pub fn apply_override_on_module(
     transform_multi_assign(m);
     let mut transformer = OverrideTransformer {
         target_id: target_id.to_string(),
-        field_path: field,
+        field_paths: ss[1..].to_vec(),
         override_key: key,
         override_value: build_expr_from_string(value),
         override_target_count: 0,
@@ -190,9 +191,9 @@ fn apply_import_paths_on_module(m: &mut ast::Module, import_paths: &[String]) ->
     for stmt in &m.body {
         if let ast::Stmt::Import(import_stmt) = &stmt.node {
             if let Some(asname) = &import_stmt.asname {
-                exist_import_set.insert(format!("{} as {}", import_stmt.path, asname));
+                exist_import_set.insert(format!("{} as {}", import_stmt.path.node, asname.node));
             } else {
-                exist_import_set.insert(import_stmt.path.to_string());
+                exist_import_set.insert(import_stmt.path.node.to_string());
             }
         }
     }
@@ -206,7 +207,7 @@ fn apply_import_paths_on_module(m: &mut ast::Module, import_paths: &[String]) ->
             .last()
             .ok_or_else(|| anyhow!("Invalid import path {}", path))?;
         let import_node = ast::ImportStmt {
-            path: path.to_string(),
+            path: ast::Node::dummy_node(path.to_string()),
             rawpath: "".to_string(),
             name: name.to_string(),
             asname: None,
@@ -229,7 +230,7 @@ fn apply_import_paths_on_module(m: &mut ast::Module, import_paths: &[String]) ->
 /// OverrideTransformer is used to walk AST and transform it with the override values.
 struct OverrideTransformer {
     pub target_id: String,
-    pub field_path: String,
+    pub field_paths: Vec<String>,
     pub override_key: ast::Identifier,
     pub override_value: Option<ast::NodeRef<ast::Expr>>,
     pub override_target_count: usize,
@@ -238,6 +239,144 @@ struct OverrideTransformer {
 }
 
 impl<'ctx> MutSelfMutWalker<'ctx> for OverrideTransformer {
+    // When override the global variable, it should be updated in the module level.
+    // Because the delete action may delete the global variable.
+    // TODO: combine the code of walk_module, walk_assign_stmt and walk_unification_stmt
+    fn walk_module(&mut self, module: &'ctx mut ast::Module) {
+        match self.action {
+            // Walk the module body to find the target and override it.
+            ast::OverrideAction::CreateOrUpdate => {
+                module.body.iter_mut().for_each(|stmt| {
+                    if let ast::Stmt::Assign(assign_stmt) = &mut stmt.node {
+                        if assign_stmt.targets.len() == 1 && self.field_paths.len() == 0 {
+                            let target =
+                                &Some(Box::new(ast::Node::dummy_node(ast::Expr::Identifier(
+                                    assign_stmt.targets.get(0).unwrap().node.clone(),
+                                ))));
+                            let target = get_key_path(target);
+                            if target == self.target_id {
+                                let item = assign_stmt.value.clone();
+
+                                let mut value = self.clone_override_value();
+                                // Use position information that needs to override the expression.
+                                value.set_pos(item.pos());
+                                // Override the node value.
+                                assign_stmt.value = value;
+                                self.has_override = true;
+                            }
+                        }
+                    }
+                    if let ast::Stmt::Unification(unification_stmt) = &mut stmt.node {
+                        let target = match unification_stmt.target.node.names.get(0) {
+                            Some(name) => name,
+                            None => bug!(
+                                "Invalid AST unification target names {:?}",
+                                unification_stmt.target.node.names
+                            ),
+                        };
+                        if target.node == self.target_id {
+                            let item = unification_stmt.value.clone();
+
+                            let mut value = self.clone_override_value();
+                            // Use position information that needs to override the expression.
+                            value.set_pos(item.pos());
+
+                            // Unification is only support to override the schema expression.
+                            if let ast::Expr::Schema(schema_expr) = value.node {
+                                self.has_override = true;
+                                unification_stmt.value =
+                                    Box::new(ast::Node::dummy_node(schema_expr));
+                            }
+                        }
+                    }
+                });
+            }
+            ast::OverrideAction::Delete => {
+                // Delete the override target when the action is DELETE.
+                module.body.retain(|stmt| {
+                    if let ast::Stmt::Assign(assign_stmt) = &stmt.node {
+                        if assign_stmt.targets.len() == 1 && self.field_paths.len() == 0 {
+                            let target =
+                                &Some(Box::new(ast::Node::dummy_node(ast::Expr::Identifier(
+                                    assign_stmt.targets.get(0).unwrap().node.clone(),
+                                ))));
+                            let target = get_key_path(target);
+                            if target == self.target_id {
+                                self.has_override = true;
+                                return false;
+                            }
+                        }
+                    }
+                    if let ast::Stmt::Unification(unification_stmt) = &stmt.node {
+                        let target = match unification_stmt.target.node.names.get(0) {
+                            Some(name) => name,
+                            None => bug!(
+                                "Invalid AST unification target names {:?}",
+                                unification_stmt.target.node.names
+                            ),
+                        };
+                        if target.node == self.target_id && self.field_paths.len() == 0 {
+                            self.has_override = true;
+                            return false;
+                        }
+                    }
+                    true
+                });
+            }
+        }
+
+        walk_list_mut!(self, walk_stmt, module.body);
+
+        // If the variable is not found, add a new variable with the override value.
+        if !self.has_override {
+            match self.action {
+                // Walk the module body to find the target and override it.
+                ast::OverrideAction::CreateOrUpdate => {
+                    let value = if self.field_paths.len() == 0 {
+                        self.clone_override_value()
+                    } else {
+                        // if the spec is b.c.d=1 and the b is not found, add config b: {c: {d: 1}}
+                        Box::new(ast::Node::dummy_node(ast::Expr::Config(ast::ConfigExpr {
+                            items: vec![Box::new(ast::Node::dummy_node(ast::ConfigEntry {
+                                key: Some(Box::new(ast::Node::dummy_node(ast::Expr::Identifier(
+                                    ast::Identifier {
+                                        names: self
+                                            .field_paths
+                                            .iter()
+                                            .map(|s| ast::Node::dummy_node(s.to_string()))
+                                            .collect(),
+                                        ctx: ast::ExprContext::Store,
+                                        pkgpath: "".to_string(),
+                                    },
+                                )))),
+                                value: self.clone_override_value(),
+                                operation: ast::ConfigEntryOperation::Override,
+                                insert_index: -1,
+                            }))],
+                        })))
+                    };
+
+                    let assign = ast::AssignStmt {
+                        targets: vec![Box::new(ast::Node::dummy_node(ast::Identifier {
+                            names: vec![ast::Node::dummy_node(self.target_id.clone())],
+                            ctx: ast::ExprContext::Store,
+                            pkgpath: "".to_string(),
+                        }))],
+                        ty: None,
+                        value,
+                    };
+                    module
+                        .body
+                        .push(Box::new(ast::Node::dummy_node(ast::Stmt::Assign(assign))));
+                    self.has_override = true;
+                }
+                ast::OverrideAction::Delete => {
+                    return;
+                }
+            }
+        }
+    }
+
     fn walk_unification_stmt(&mut self, unification_stmt: &'ctx mut ast::UnificationStmt) {
         let name = match unification_stmt.target.node.names.get(0) {
             Some(name) => name,
@@ -246,7 +385,7 @@ impl<'ctx> MutSelfMutWalker<'ctx> for OverrideTransformer {
                 unification_stmt.target.node.names
             ),
         };
-        if name.node != self.target_id {
+        if name.node != self.target_id || self.field_paths.len() == 0 {
             return;
         }
         self.override_target_count = 1;
@@ -255,7 +394,7 @@ impl<'ctx> MutSelfMutWalker<'ctx> for OverrideTransformer {
     }
 
     fn walk_assign_stmt(&mut self, assign_stmt: &'ctx mut ast::AssignStmt) {
-        if let ast::Expr::Schema(_) = &assign_stmt.value.node {
+        if let ast::Expr::Schema(_) | ast::Expr::Config(_) = &assign_stmt.value.node {
             self.override_target_count = 0;
             for target in &assign_stmt.targets {
                 if target.node.names.len() != 1 {
@@ -301,10 +440,11 @@ impl<'ctx> MutSelfMutWalker<'ctx> for OverrideTransformer {
     }
 
     fn walk_config_expr(&mut self, config_expr: &'ctx mut ast::ConfigExpr) {
-        for config_entry in config_expr.items.iter_mut() {
-            walk_if_mut!(self, walk_expr, config_entry.node.key);
-            self.walk_expr(&mut config_entry.node.value.node);
+        // Lookup config all fields and replace if it is matched with the override spec.
+        if !self.lookup_config_and_replace(config_expr) {
+            return;
         }
+        self.override_target_count = 0;
     }
 
     fn walk_if_stmt(&mut self, _: &'ctx mut ast::IfStmt) {
@@ -323,7 +463,11 @@ impl OverrideTransformer {
     /// return whether is found a replaced one.
     fn lookup_config_and_replace(&self, config_expr: &mut ast::ConfigExpr) -> bool {
         // Split a path into multiple parts. `a.b.c` -> ["a", "b", "c"]
-        let parts = self.field_path.split('.').collect::<Vec<&str>>();
+        let parts = self
+            .field_paths
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<&str>>();
         self.replace_config_with_path_parts(config_expr, &parts)
     }
 

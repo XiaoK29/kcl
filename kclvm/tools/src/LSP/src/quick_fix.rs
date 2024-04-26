@@ -1,17 +1,47 @@
 use std::collections::HashMap;
 
-use kclvm_error::{DiagnosticId, WarningKind};
+use kclvm_error::{DiagnosticId, ErrorKind, WarningKind};
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Diagnostic, NumberOrString, TextEdit, Url,
 };
+use serde_json::Value;
 
 pub(crate) fn quick_fix(uri: &Url, diags: &Vec<Diagnostic>) -> Vec<lsp_types::CodeActionOrCommand> {
     let mut code_actions: Vec<lsp_types::CodeActionOrCommand> = vec![];
     for diag in diags {
         if let Some(code) = &diag.code {
-            if let Some(id) = conver_code_to_kcl_diag_id(code) {
+            if let Some(id) = convert_code_to_kcl_diag_id(code) {
                 match id {
-                    DiagnosticId::Error(_) => continue,
+                    DiagnosticId::Error(error) => match error {
+                        ErrorKind::CompileError => {
+                            let replacement_texts = extract_suggested_replacements(&diag.data);
+                            for replacement_text in replacement_texts {
+                                let mut changes = HashMap::new();
+                                changes.insert(
+                                    uri.clone(),
+                                    vec![TextEdit {
+                                        range: diag.range,
+                                        new_text: replacement_text.clone(),
+                                    }],
+                                );
+                                let action_title = format!(
+                                    "a local variable with a similar name exists: `{}`",
+                                    replacement_text
+                                );
+                                code_actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                                    title: action_title,
+                                    kind: Some(CodeActionKind::QUICKFIX),
+                                    diagnostics: Some(vec![diag.clone()]),
+                                    edit: Some(lsp_types::WorkspaceEdit {
+                                        changes: Some(changes),
+                                        ..Default::default()
+                                    }),
+                                    ..Default::default()
+                                }));
+                            }
+                        }
+                        _ => continue,
+                    },
                     DiagnosticId::Warning(warn) => match warn {
                         WarningKind::UnusedImportWarning => {
                             let mut changes = HashMap::new();
@@ -63,13 +93,30 @@ pub(crate) fn quick_fix(uri: &Url, diags: &Vec<Diagnostic>) -> Vec<lsp_types::Co
     code_actions
 }
 
-pub(crate) fn conver_code_to_kcl_diag_id(code: &NumberOrString) -> Option<DiagnosticId> {
+fn extract_suggested_replacements(data: &Option<Value>) -> Vec<String> {
+    data.as_ref()
+        .and_then(|data| match data {
+            Value::Object(obj) => obj.get("suggested_replacement").map(|val| match val {
+                Value::String(s) => vec![s.clone()],
+                Value::Array(arr) => arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect(),
+                _ => vec![],
+            }),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+pub(crate) fn convert_code_to_kcl_diag_id(code: &NumberOrString) -> Option<DiagnosticId> {
     match code {
         NumberOrString::Number(_) => None,
         NumberOrString::String(code) => match code.as_str() {
             "CompilerWarning" => Some(DiagnosticId::Warning(WarningKind::CompilerWarning)),
             "UnusedImportWarning" => Some(DiagnosticId::Warning(WarningKind::UnusedImportWarning)),
             "ReimportWarning" => Some(DiagnosticId::Warning(WarningKind::ReimportWarning)),
+            "CompileError" => Some(DiagnosticId::Error(ErrorKind::CompileError)),
             "ImportPositionWarning" => {
                 Some(DiagnosticId::Warning(WarningKind::ImportPositionWarning))
             }
@@ -90,11 +137,10 @@ mod tests {
 
     use super::quick_fix;
     use crate::{
+        state::KCLVfs,
         to_lsp::kcl_diag_to_lsp_diags,
-        util::{parse_param_and_compile, Param},
+        util::{compile_with_params, Params},
     };
-    use parking_lot::RwLock;
-    use std::sync::Arc;
 
     #[test]
     #[bench_test]
@@ -104,13 +150,13 @@ mod tests {
         test_file.push("src/test_data/quick_fix.k");
         let file = test_file.to_str().unwrap();
 
-        let (_, _, diags, _) = parse_param_and_compile(
-            Param {
-                file: file.to_string(),
-                module_cache: None,
-            },
-            Some(Arc::new(RwLock::new(Default::default()))),
-        )
+        let (_, diags, _) = compile_with_params(Params {
+            file: file.to_string(),
+            module_cache: None,
+            scope_cache: None,
+            vfs: Some(KCLVfs::default()),
+            compile_unit_cache: None,
+        })
         .unwrap();
 
         let diagnostics = diags

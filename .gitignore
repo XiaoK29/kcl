@@ -25,6 +25,7 @@ __kcl_test_main.k
 /kcl-go*
 /_build_dist
 .kusion
+._target
 
 /venv/
 
@@ -89,10 +90,6 @@ _a.out_*.*
 
 # Compiler_base
 .compiler_base
-
-# LLVM
-llvm*
-llvm-*
 
 # KCL mod lock file
 !.mod.lock

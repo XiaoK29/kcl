@@ -106,7 +106,7 @@ impl Diagnostic {
         note: Option<&str>,
         range: Range,
         code: Option<DiagnosticId>,
-        suggested_replacement: Option<String>,
+        suggestions: Option<Vec<String>>,
     ) -> Self {
         Diagnostic {
             level,
@@ -114,8 +114,8 @@ impl Diagnostic {
                 range,
                 style: Style::LineAndColumn,
                 message: message.to_string(),
-                note: note.map(|s| s.to_string()),
-                suggested_replacement,
+                note: note.map(String::from),
+                suggested_replacement: suggestions,
             }],
             code,
         }
@@ -135,7 +135,7 @@ pub struct Message {
     pub style: Style,
     pub message: String,
     pub note: Option<String>,
-    pub suggested_replacement: Option<String>,
+    pub suggested_replacement: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

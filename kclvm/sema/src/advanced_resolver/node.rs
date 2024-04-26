@@ -7,7 +7,13 @@ use kclvm_ast::walker::MutSelfTypedResultWalker;
 use kclvm_error::{diagnostic::Range, Position};
 
 use crate::{
-    core::symbol::{KCLSymbolSemanticInfo, SymbolRef, UnresolvedSymbol, ValueSymbol},
+    core::{
+        scope::LocalSymbolScopeKind,
+        symbol::{
+            CommentSymbol, DecoratorSymbol, ExpressionSymbol, KCLSymbolSemanticInfo, SymbolRef,
+            UnresolvedSymbol, ValueSymbol,
+        },
+    },
     ty::{Type, SCHEMA_MEMBER_FUNCTIONS},
 };
 
@@ -21,6 +27,13 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
     fn walk_module(&mut self, module: &'ctx ast::Module) -> Self::Result {
         for stmt in module.body.iter() {
             self.stmt(&stmt);
+        }
+        for comment in module.comments.iter() {
+            let (start, end) = comment.get_span_pos();
+            self.ctx.start_pos = start;
+            self.ctx.end_pos = end;
+            self.ctx.cur_node = comment.id.clone();
+            self.walk_comment(&comment.node);
         }
         None
     }
@@ -59,7 +72,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
                 ty: self
                     .ctx
                     .node_ty_map
-                    .get(&type_alias_stmt.type_name.id)
+                    .get(&self.ctx.get_node_key(&type_alias_stmt.type_name.id))
                     .map(|ty| ty.clone()),
                 doc: None,
             };
@@ -114,23 +127,28 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
 
     fn walk_import_stmt(&mut self, import_stmt: &'ctx ast::ImportStmt) -> Self::Result {
         let ast_id = self.ctx.cur_node.clone();
-        let (start_pos, end_pos) = (self.ctx.start_pos.clone(), self.ctx.end_pos.clone());
+        let (start_pos, end_pos) = import_stmt
+            .asname
+            .clone()
+            .unwrap_or(import_stmt.path.clone())
+            .get_span_pos();
+
         let mut unresolved =
-            UnresolvedSymbol::new(import_stmt.path.clone(), start_pos, end_pos, None);
+            UnresolvedSymbol::new(import_stmt.path.node.clone(), start_pos, end_pos, None);
         let package_symbol = self
             .gs
             .get_symbols()
-            .get_symbol_by_fully_qualified_name(&import_stmt.path)?;
+            .get_symbol_by_fully_qualified_name(&import_stmt.path.node)?;
         unresolved.def = Some(package_symbol);
         let unresolved_ref = self
             .gs
             .get_symbols_mut()
-            .alloc_unresolved_symbol(unresolved, &ast_id);
+            .alloc_unresolved_symbol(unresolved, self.ctx.get_node_key(&ast_id));
         self.gs
             .get_symbols_mut()
             .symbols_info
-            .ast_id_map
-            .insert(ast_id, unresolved_ref);
+            .node_symbol_map
+            .insert(self.ctx.get_node_key(&ast_id), unresolved_ref);
         let cur_scope = *self.ctx.scopes.last().unwrap();
         self.gs
             .get_scopes_mut()
@@ -139,10 +157,11 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
     }
 
     fn walk_schema_stmt(&mut self, schema_stmt: &'ctx ast::SchemaStmt) -> Self::Result {
+        let (start, end) = (self.ctx.start_pos.clone(), self.ctx.end_pos.clone());
         let schema_ty = self
             .ctx
             .node_ty_map
-            .get(&schema_stmt.name.id)
+            .get(&self.ctx.get_node_key(&schema_stmt.name.id))
             .unwrap()
             .clone();
         let schema_symbol = self
@@ -175,10 +194,10 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
                     false,
                 );
                 func_value.sema_info.ty = Some(func_ty);
-                let func_symbol_ref = self
-                    .gs
-                    .get_symbols_mut()
-                    .alloc_value_symbol(func_value, &ast::AstIndex::default());
+                let func_symbol_ref = self.gs.get_symbols_mut().alloc_value_symbol(
+                    func_value,
+                    self.ctx.get_node_key(&ast::AstIndex::default()),
+                );
                 schema_builtin_member.insert(name.to_string(), func_symbol_ref);
             }
             self.gs
@@ -197,8 +216,16 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
             };
         }
 
-        let (start, end) = schema_stmt.get_span_pos();
-        self.enter_local_scope(&self.ctx.current_filename.clone().unwrap(), start, end);
+        self.resolve_decorator(&schema_stmt.decorators);
+
+        let mut last_end_pos = start.clone();
+
+        self.enter_local_scope(
+            &self.ctx.current_filename.clone().unwrap(),
+            start,
+            end.clone(),
+            LocalSymbolScopeKind::SchemaDef,
+        );
         let cur_scope = *self.ctx.scopes.last().unwrap();
         self.gs
             .get_scopes_mut()
@@ -224,6 +251,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
             if let Some(mixin) = self.walk_identifier_expr(mixin) {
                 mixins.push(mixin);
             }
+            last_end_pos = mixin.get_end_pos();
         }
         self.gs
             .get_symbols_mut()
@@ -234,20 +262,21 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
 
         if let Some(args) = &schema_stmt.args {
             self.walk_arguments(&args.node);
+            last_end_pos = args.get_end_pos();
         }
         if let Some(index_signature) = &schema_stmt.index_signature {
             if let Some(key_name) = &index_signature.node.key_name {
                 let (start, end) = index_signature.get_span_pos();
                 let value = self.gs.get_symbols_mut().alloc_value_symbol(
                     ValueSymbol::new(key_name.clone(), start, end, Some(schema_symbol), false),
-                    &index_signature.id,
+                    self.ctx.get_node_key(&index_signature.id),
                 );
                 if let Some(symbol) = self.gs.get_symbols_mut().values.get_mut(value.get_id()) {
                     symbol.sema_info = KCLSymbolSemanticInfo {
                         ty: self
                             .ctx
                             .node_ty_map
-                            .get(&index_signature.id)
+                            .get(&self.ctx.get_node_key(&index_signature.id))
                             .map(|ty| ty.clone()),
                         doc: None,
                     };
@@ -262,6 +291,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
                     self.expr(value);
                 };
             }
+            last_end_pos = index_signature.get_end_pos();
         }
         for stmt in schema_stmt.body.iter() {
             if let Some(attribute_symbol) = self.stmt(&stmt) {
@@ -279,18 +309,38 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
                     .attributes
                     .insert(name, attribute_symbol);
             }
+            last_end_pos = stmt.get_end_pos();
+        }
+
+        let has_check = !schema_stmt.checks.is_empty();
+        if has_check {
+            self.enter_local_scope(
+                &self.ctx.current_filename.clone().unwrap(),
+                last_end_pos,
+                end,
+                LocalSymbolScopeKind::Check,
+            );
         }
 
         for check_expr in schema_stmt.checks.iter() {
             self.walk_check_expr(&check_expr.node);
         }
+
+        if has_check {
+            self.leave_scope();
+        }
+
         self.leave_scope();
 
         Some(schema_symbol)
     }
 
     fn walk_rule_stmt(&mut self, rule_stmt: &'ctx ast::RuleStmt) -> Self::Result {
-        let rule_ty = self.ctx.node_ty_map.get(&rule_stmt.name.id)?.clone();
+        let rule_ty = self
+            .ctx
+            .node_ty_map
+            .get(&self.ctx.get_node_key(&rule_stmt.name.id))?
+            .clone();
         let rule_symbol = self
             .gs
             .get_symbols()
@@ -305,7 +355,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
                 ty: self
                     .ctx
                     .node_ty_map
-                    .get(&rule_stmt.name.id)
+                    .get(&self.ctx.get_node_key(&rule_stmt.name.id))
                     .map(|ty| ty.clone()),
                 doc: rule_stmt.doc.as_ref().map(|doc| doc.node.clone()),
             };
@@ -327,19 +377,18 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
             .rules
             .get_mut(rule_symbol.get_id())?
             .parent_rules = parent_rules;
+        self.resolve_decorator(&rule_stmt.decorators);
         Some(rule_symbol)
     }
 
     fn walk_quant_expr(&mut self, quant_expr: &'ctx ast::QuantExpr) -> Self::Result {
+        let (start, end) = (self.ctx.start_pos.clone(), self.ctx.end_pos.clone());
         self.expr(&quant_expr.target);
-        let (start, mut end) = quant_expr.test.get_span_pos();
-        if let Some(if_cond) = &quant_expr.if_cond {
-            end = if_cond.get_end_pos();
-        }
         self.enter_local_scope(
             &self.ctx.current_filename.as_ref().unwrap().clone(),
             start,
             end,
+            LocalSymbolScopeKind::Quant,
         );
         let cur_scope = *self.ctx.scopes.last().unwrap();
         for target in quant_expr.variables.iter() {
@@ -355,14 +404,18 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
             };
             let value = self.gs.get_symbols_mut().alloc_value_symbol(
                 ValueSymbol::new(name.clone(), start_pos, end_pos, None, false),
-                &ast_id,
+                self.ctx.get_node_key(&ast_id),
             );
             self.gs
                 .get_scopes_mut()
                 .add_def_to_scope(cur_scope, name, value);
             if let Some(symbol) = self.gs.get_symbols_mut().values.get_mut(value.get_id()) {
                 symbol.sema_info = KCLSymbolSemanticInfo {
-                    ty: self.ctx.node_ty_map.get(ast_id).map(|ty| ty.clone()),
+                    ty: self
+                        .ctx
+                        .node_ty_map
+                        .get(&self.ctx.get_node_key(ast_id))
+                        .map(|ty| ty.clone()),
                     doc: None,
                 };
             }
@@ -381,10 +434,10 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
             .gs
             .get_symbols()
             .symbols_info
-            .ast_id_map
-            .get(&schema_attr.name.id)?;
+            .node_symbol_map
+            .get(&self.ctx.get_node_key(&schema_attr.name.id))?;
         let parent_scope = *self.ctx.scopes.last().unwrap();
-        let parent_scope = self.gs.get_scopes().get_scope(parent_scope).unwrap();
+        let parent_scope = self.gs.get_scopes().get_scope(&parent_scope).unwrap();
         let mut doc = None;
         if let Some(schema_symbol) = parent_scope.get_owner() {
             let schema_symbol = self.gs.get_symbols().get_symbol(schema_symbol).unwrap();
@@ -406,7 +459,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
                 ty: self
                     .ctx
                     .node_ty_map
-                    .get(&schema_attr.name.id)
+                    .get(&self.ctx.get_node_key(&schema_attr.name.id))
                     .map(|ty| ty.clone()),
                 doc,
             };
@@ -416,6 +469,8 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
         if let Some(value) = &schema_attr.value {
             self.expr(value);
         }
+
+        self.resolve_decorator(&schema_attr.decorators);
         Some(attr_symbol)
     }
 
@@ -440,7 +495,11 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
 
     fn walk_selector_expr(&mut self, selector_expr: &'ctx ast::SelectorExpr) -> Self::Result {
         self.expr(&selector_expr.value);
-        let mut parent_ty = self.ctx.node_ty_map.get(&selector_expr.value.id)?.clone();
+        let mut parent_ty = self
+            .ctx
+            .node_ty_map
+            .get(&self.ctx.get_node_key(&selector_expr.value.id))?
+            .clone();
         for name in &selector_expr.attr.node.names {
             let def_symbol_ref = self.gs.get_symbols().get_type_attribute(
                 &parent_ty,
@@ -455,13 +514,17 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
             let unresolved_ref = self
                 .gs
                 .get_symbols_mut()
-                .alloc_unresolved_symbol(unresolved, &ast_id);
+                .alloc_unresolved_symbol(unresolved, self.ctx.get_node_key(&ast_id));
             let cur_scope = *self.ctx.scopes.last().unwrap();
             self.gs
                 .get_scopes_mut()
                 .add_ref_to_scope(cur_scope, unresolved_ref);
 
-            parent_ty = self.ctx.node_ty_map.get(&name.id)?.clone();
+            parent_ty = self
+                .ctx
+                .node_ty_map
+                .get(&self.ctx.get_node_key(&name.id))?
+                .clone();
         }
         None
     }
@@ -506,7 +569,12 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
             Some(last) => last.get_end_pos(),
             None => list_comp.elt.get_end_pos(),
         };
-        self.enter_local_scope(&self.ctx.current_filename.clone().unwrap(), start, end);
+        self.enter_local_scope(
+            &self.ctx.current_filename.clone().unwrap(),
+            start,
+            end,
+            LocalSymbolScopeKind::List,
+        );
         for comp_clause in &list_comp.generators {
             self.walk_comp_clause(&comp_clause.node);
         }
@@ -516,17 +584,27 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
     }
 
     fn walk_dict_comp(&mut self, dict_comp: &'ctx ast::DictComp) -> Self::Result {
-        let key = dict_comp.entry.key.as_ref().unwrap();
-        let start = key.get_pos();
+        let (start, key) = match dict_comp.entry.key.as_ref() {
+            Some(key) => (key.get_pos(), Some(key)),
+            None => (dict_comp.entry.value.get_pos(), None),
+        };
+
         let end = match dict_comp.generators.last() {
             Some(last) => last.get_end_pos(),
             None => dict_comp.entry.value.get_end_pos(),
         };
-        self.enter_local_scope(&self.ctx.current_filename.clone().unwrap(), start, end);
+        self.enter_local_scope(
+            &self.ctx.current_filename.clone().unwrap(),
+            start,
+            end,
+            LocalSymbolScopeKind::Dict,
+        );
         for comp_clause in &dict_comp.generators {
             self.walk_comp_clause(&comp_clause.node);
         }
-        self.expr(key);
+        if let Some(key) = key {
+            self.expr(key);
+        }
         self.expr(&dict_comp.entry.value);
         self.leave_scope();
         None
@@ -536,6 +614,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
         &mut self,
         list_if_item_expr: &'ctx ast::ListIfItemExpr,
     ) -> Self::Result {
+        self.expr(&list_if_item_expr.if_cond)?;
         if let Some(orelse) = &list_if_item_expr.orelse {
             self.expr(orelse);
         }
@@ -577,7 +656,11 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
 
     fn walk_schema_expr(&mut self, schema_expr: &'ctx ast::SchemaExpr) -> Self::Result {
         self.walk_identifier_expr(&schema_expr.name)?;
-        let schema_ty = self.ctx.node_ty_map.get(&schema_expr.name.id)?.clone();
+        let schema_ty = self
+            .ctx
+            .node_ty_map
+            .get(&self.ctx.get_node_key(&schema_expr.name.id))?
+            .clone();
         let schema_symbol = self
             .gs
             .get_symbols()
@@ -606,7 +689,12 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
 
     fn walk_lambda_expr(&mut self, lambda_expr: &'ctx ast::LambdaExpr) -> Self::Result {
         let (start, end) = (self.ctx.start_pos.clone(), self.ctx.end_pos.clone());
-        self.enter_local_scope(&self.ctx.current_filename.clone().unwrap(), start, end);
+        self.enter_local_scope(
+            &self.ctx.current_filename.clone().unwrap(),
+            start,
+            end,
+            LocalSymbolScopeKind::Lambda,
+        );
         if let Some(args) = &lambda_expr.args {
             self.walk_arguments(&args.node);
         }
@@ -686,8 +774,12 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for AdvancedResolver<'ctx> {
         None
     }
 
-    fn walk_comment(&mut self, _comment: &'ctx ast::Comment) -> Self::Result {
-        None
+    fn walk_comment(&mut self, comment: &'ctx ast::Comment) -> Self::Result {
+        let (start, end) = (self.ctx.start_pos.clone(), self.ctx.end_pos.clone());
+        let comment_symbol = CommentSymbol::new(start, end, comment.text.clone());
+        self.gs
+            .get_symbols_mut()
+            .alloc_comment_symbol(comment_symbol, self.ctx.get_node_key(&self.ctx.cur_node))
     }
 
     fn walk_missing_expr(&mut self, _missing_expr: &'ctx ast::MissingExpr) -> Self::Result {
@@ -704,15 +796,35 @@ impl<'ctx> AdvancedResolver<'ctx> {
                 | ast::Expr::Config(_)
                 | ast::Expr::Schema(_)
                 | ast::Expr::ConfigIfEntry(_)
+                | ast::Expr::Quant(_)
         ) {
             let (start, end) = expr.get_span_pos();
             self.ctx.start_pos = start;
             self.ctx.end_pos = end;
         }
         self.ctx.cur_node = expr.id.clone();
-        let result = self.walk_expr(&expr.node);
-
-        result
+        match self.walk_expr(&expr.node) {
+            None => match self.ctx.node_ty_map.get(&self.ctx.get_node_key(&expr.id)) {
+                Some(ty) => {
+                    if let ast::Expr::Missing(_) = expr.node {
+                        return None;
+                    }
+                    let (_, end) = expr.get_span_pos();
+                    let mut expr_symbol = ExpressionSymbol::new(
+                        format!("@{}", expr.node.get_expr_name()),
+                        end.clone(),
+                        end,
+                        None,
+                    );
+                    expr_symbol.sema_info.ty = Some(ty.clone());
+                    self.gs
+                        .get_symbols_mut()
+                        .alloc_expression_symbol(expr_symbol, self.ctx.get_node_key(&expr.id))
+                }
+                None => None,
+            },
+            some => some,
+        }
     }
 
     #[inline]
@@ -729,9 +841,12 @@ impl<'ctx> AdvancedResolver<'ctx> {
         let first_name = names.get(0)?;
         let cur_scope = *self.ctx.scopes.last().unwrap();
 
-        let mut first_symbol =
-            self.gs
-                .look_up_symbol(&first_name.node, cur_scope, self.get_current_module_info());
+        let mut first_symbol = self.gs.look_up_symbol(
+            &first_name.node,
+            cur_scope,
+            self.get_current_module_info(),
+            self.ctx.maybe_def,
+        );
         if first_symbol.is_none() {
             //maybe import package symbol
             let module_info = self.get_current_module_info().unwrap();
@@ -741,7 +856,29 @@ impl<'ctx> AdvancedResolver<'ctx> {
                 first_symbol = self
                     .gs
                     .get_symbols()
-                    .get_symbol_by_fully_qualified_name(&import_info.unwrap().fully_qualified_name)
+                    .get_symbol_by_fully_qualified_name(&import_info.unwrap().fully_qualified_name);
+            }
+
+            if let Some(first_symbol) = first_symbol {
+                if self
+                    .gs
+                    .get_symbols()
+                    .get_symbol(first_symbol)
+                    .unwrap()
+                    .get_sema_info()
+                    .ty
+                    .is_none()
+                {
+                    if let Some(ty) = self
+                        .ctx
+                        .node_ty_map
+                        .get(&self.ctx.get_node_key(&first_name.id))
+                    {
+                        self.gs
+                            .get_symbols_mut()
+                            .set_symbol_type(first_symbol, ty.clone());
+                    }
+                }
             }
         }
         match first_symbol {
@@ -759,14 +896,17 @@ impl<'ctx> AdvancedResolver<'ctx> {
                     let first_unresolved_ref = self
                         .gs
                         .get_symbols_mut()
-                        .alloc_unresolved_symbol(first_unresolved, &ast_id);
+                        .alloc_unresolved_symbol(first_unresolved, self.ctx.get_node_key(&ast_id));
                     let cur_scope = *self.ctx.scopes.last().unwrap();
                     self.gs
                         .get_scopes_mut()
                         .add_ref_to_scope(cur_scope, first_unresolved_ref);
                 }
                 if names.len() > 1 {
-                    let mut parent_ty = self.ctx.node_ty_map.get(&first_name.id)?;
+                    let mut parent_ty = self
+                        .ctx
+                        .node_ty_map
+                        .get(&self.ctx.get_node_key(&first_name.id))?;
 
                     for index in 1..names.len() {
                         let name = names.get(index).unwrap();
@@ -784,14 +924,14 @@ impl<'ctx> AdvancedResolver<'ctx> {
                         let unresolved_ref = self
                             .gs
                             .get_symbols_mut()
-                            .alloc_unresolved_symbol(unresolved, &ast_id);
+                            .alloc_unresolved_symbol(unresolved, self.ctx.get_node_key(&ast_id));
 
                         let cur_scope = *self.ctx.scopes.last().unwrap();
                         self.gs
                             .get_scopes_mut()
                             .add_ref_to_scope(cur_scope, unresolved_ref);
 
-                        parent_ty = self.ctx.node_ty_map.get(&name.id)?;
+                        parent_ty = self.ctx.node_ty_map.get(&self.ctx.get_node_key(&name.id))?;
                         if index == names.len() - 1 {
                             return Some(unresolved_ref);
                         }
@@ -805,7 +945,7 @@ impl<'ctx> AdvancedResolver<'ctx> {
                     let ast_id = first_name.id.clone();
                     let first_value = self.gs.get_symbols_mut().alloc_value_symbol(
                         ValueSymbol::new(first_name.node.clone(), start_pos, end_pos, None, false),
-                        &ast_id,
+                        self.ctx.get_node_key(&ast_id),
                     );
                     self.gs.get_scopes_mut().add_def_to_scope(
                         cur_scope,
@@ -823,7 +963,7 @@ impl<'ctx> AdvancedResolver<'ctx> {
                             ty: self
                                 .ctx
                                 .node_ty_map
-                                .get(&first_name.id)
+                                .get(&self.ctx.get_node_key(&first_name.id))
                                 .map(|ty| ty.clone()),
                             doc: None,
                         };
@@ -835,7 +975,7 @@ impl<'ctx> AdvancedResolver<'ctx> {
                         let ast_id = name.id.clone();
                         let value = self.gs.get_symbols_mut().alloc_value_symbol(
                             ValueSymbol::new(name.node.clone(), start_pos, end_pos, None, false),
-                            &ast_id,
+                            self.ctx.get_node_key(&ast_id),
                         );
 
                         self.gs.get_scopes_mut().add_def_to_scope(
@@ -848,7 +988,11 @@ impl<'ctx> AdvancedResolver<'ctx> {
                             self.gs.get_symbols_mut().values.get_mut(value.get_id())
                         {
                             symbol.sema_info = KCLSymbolSemanticInfo {
-                                ty: self.ctx.node_ty_map.get(&name.id).map(|ty| ty.clone()),
+                                ty: self
+                                    .ctx
+                                    .node_ty_map
+                                    .get(&self.ctx.get_node_key(&name.id))
+                                    .map(|ty| ty.clone()),
                                 doc: None,
                             };
                         }
@@ -871,8 +1015,8 @@ impl<'ctx> AdvancedResolver<'ctx> {
             .gs
             .get_symbols()
             .symbols_info
-            .ast_id_map
-            .get(&identifier.id)
+            .node_symbol_map
+            .get(&self.ctx.get_node_key(&&identifier.id))
             .map(|symbol_ref| *symbol_ref)
         {
             if let Some(symbol) = self
@@ -887,9 +1031,27 @@ impl<'ctx> AdvancedResolver<'ctx> {
                     &identifier.node.names.last().unwrap().id
                 };
                 symbol.sema_info = KCLSymbolSemanticInfo {
-                    ty: self.ctx.node_ty_map.get(id).map(|ty| ty.clone()),
+                    ty: self
+                        .ctx
+                        .node_ty_map
+                        .get(&self.ctx.get_node_key(id))
+                        .map(|ty| ty.clone()),
                     doc: None,
                 };
+            }
+
+            if self.ctx.maybe_def && identifier.node.names.len() > 0 {
+                let cur_scope = *self.ctx.scopes.last().unwrap();
+                match cur_scope.kind {
+                    crate::core::scope::ScopeKind::Local => {
+                        self.gs.get_scopes_mut().add_def_to_scope(
+                            cur_scope,
+                            identifier.node.names.last().unwrap().node.clone(),
+                            identifier_symbol,
+                        );
+                    }
+                    crate::core::scope::ScopeKind::Root => {}
+                }
             }
             identifier_symbol
         } else {
@@ -953,12 +1115,16 @@ impl<'ctx> AdvancedResolver<'ctx> {
             let (start_pos, end_pos): Range = kw.get_span_pos();
             let value = self.gs.get_symbols_mut().alloc_value_symbol(
                 ValueSymbol::new(kw.node.arg.node.get_name(), start_pos, end_pos, None, false),
-                &kw.id,
+                self.ctx.get_node_key(&kw.id),
             );
 
             if let Some(value) = self.gs.get_symbols_mut().values.get_mut(value.get_id()) {
                 value.sema_info = KCLSymbolSemanticInfo {
-                    ty: self.ctx.node_ty_map.get(&kw.id).map(|ty| ty.clone()),
+                    ty: self
+                        .ctx
+                        .node_ty_map
+                        .get(&self.ctx.get_node_key(&kw.id))
+                        .map(|ty| ty.clone()),
                     doc: None,
                 };
             }
@@ -968,12 +1134,19 @@ impl<'ctx> AdvancedResolver<'ctx> {
     pub(crate) fn walk_config_entries(&mut self, entries: &'ctx [ast::NodeRef<ast::ConfigEntry>]) {
         let (start, end) = (self.ctx.start_pos.clone(), self.ctx.end_pos.clone());
 
+        let schema_symbol = self.ctx.current_schema_symbol.take();
+        let kind = match &schema_symbol {
+            Some(_) => LocalSymbolScopeKind::SchemaConfig,
+            None => LocalSymbolScopeKind::Value,
+        };
+
         self.enter_local_scope(
             &self.ctx.current_filename.as_ref().unwrap().clone(),
             start,
             end,
+            kind,
         );
-        let schema_symbol = self.ctx.current_schema_symbol.take();
+
         if let Some(owner) = schema_symbol {
             let cur_scope = self.ctx.scopes.last().unwrap();
             self.gs
@@ -985,26 +1158,65 @@ impl<'ctx> AdvancedResolver<'ctx> {
             if let Some(key) = &entry.node.key {
                 self.ctx.maybe_def = true;
                 if let Some(key_symbol_ref) = self.expr(key) {
-                    self.set_config_scope_owner(key_symbol_ref);
+                    self.set_current_schema_symbol(key_symbol_ref);
                 }
                 self.ctx.maybe_def = false;
             }
+
+            let (start, end) = entry.node.value.get_span_pos();
+
+            self.enter_local_scope(
+                &self.ctx.current_filename.as_ref().unwrap().clone(),
+                start,
+                end,
+                LocalSymbolScopeKind::Value,
+            );
+
             self.expr(&entry.node.value);
+            self.leave_scope();
         }
         self.leave_scope()
     }
 
-    pub(crate) fn set_config_scope_owner(&mut self, key_symbol_ref: SymbolRef) {
+    pub(crate) fn set_current_schema_symbol(&mut self, key_symbol_ref: SymbolRef) {
         let symbols = self.gs.get_symbols();
 
         if let Some(def_symbol_ref) = symbols.get_symbol(key_symbol_ref).unwrap().get_definition() {
-            if let Some(def_ast_id) = symbols.symbols_info.symbol_ref_map.get(&def_symbol_ref) {
-                if let Some(def_ty) = self.ctx.node_ty_map.get(def_ast_id) {
-                    if def_ty.is_schema() {
+            if let Some(node_key) = symbols.symbols_info.symbol_node_map.get(&def_symbol_ref) {
+                if let Some(def_ty) = self.ctx.node_ty_map.get(node_key) {
+                    if let Some(ty) = get_possible_schema_ty(def_ty.clone()) {
                         self.ctx.current_schema_symbol =
-                            self.gs.get_symbols().get_type_symbol(&def_ty, None);
+                            self.gs.get_symbols().get_type_symbol(&ty, None);
                     }
                 }
+            }
+        }
+        fn get_possible_schema_ty(ty: Arc<Type>) -> Option<Arc<Type>> {
+            match &ty.kind {
+                crate::ty::TypeKind::List(ty) => get_possible_schema_ty(ty.clone()),
+                crate::ty::TypeKind::Dict(dict_ty) => {
+                    get_possible_schema_ty(dict_ty.val_ty.clone())
+                }
+                crate::ty::TypeKind::Union(_) => {
+                    // Todo: fix union schema type
+                    None
+                }
+                crate::ty::TypeKind::Schema(_) => Some(ty.clone()),
+                _ => None,
+            }
+        }
+    }
+
+    pub(crate) fn resolve_decorator(&mut self, decorators: &'ctx [ast::NodeRef<ast::CallExpr>]) {
+        for decorator in decorators {
+            let func_ident = &decorator.node.func;
+            let (start, end) = func_ident.get_span_pos();
+            if let kclvm_ast::ast::Expr::Identifier(id) = &func_ident.node {
+                let decorator_symbol = DecoratorSymbol::new(start, end, id.get_name());
+                self.gs.get_symbols_mut().alloc_decorator_symbol(
+                    decorator_symbol,
+                    self.ctx.get_node_key(&self.ctx.cur_node),
+                );
             }
         }
     }

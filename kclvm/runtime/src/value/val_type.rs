@@ -1,4 +1,4 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
 
 extern crate fancy_regex;
 
@@ -88,7 +88,7 @@ pub fn resolve_schema(ctx: &mut Context, schema: &ValueRef, keys: &[String]) -> 
         let value = unsafe {
             let schema_fn: SchemaTypeFunc = transmute_copy(&schema_fn_ptr);
             let cal_map = kclvm_value_Dict(ctx as *mut Context);
-            let list = kclvm_value_List(ctx as *mut Context);
+            let list = schema_value.args.clone().into_raw(ctx);
             // Schema function closures
             // is sub schema
             kclvm_list_append(list, ValueRef::bool(false).into_raw(ctx));
@@ -113,9 +113,9 @@ pub fn resolve_schema(ctx: &mut Context, schema: &ValueRef, keys: &[String]) -> 
                 list,
                 ValueRef::str(&now_meta_info.kcl_pkgpath).into_raw(ctx),
             );
-            let dict = kclvm_value_Dict(ctx as *mut Context);
+            let dict = schema_value.kwargs.clone().into_raw(ctx);
             schema_fn(ctx, list, dict);
-            let list = kclvm_value_List(ctx as *mut Context);
+            let list = schema_value.args.clone().into_raw(ctx);
             // Schema function closures
             // is sub schema
             kclvm_list_append(list, ValueRef::bool(true).into_raw(ctx));
@@ -211,7 +211,7 @@ pub fn convert_collection_value(ctx: &mut Context, value: &ValueRef, tpe: &str) 
     if !is_collection || invalid_match {
         return value.clone();
     }
-    // Convert a vlaue to union types e.g., {a: 1} => A | B
+    // Convert a value to union types e.g., {a: 1} => A | B
     if is_type_union(&tpe) {
         let types = split_type_union(&tpe);
         convert_collection_value_with_union_types(ctx, value, &types)
@@ -220,6 +220,8 @@ pub fn convert_collection_value(ctx: &mut Context, value: &ValueRef, tpe: &str) 
         let (_, value_tpe) = separate_kv(&dereference_type(&tpe));
         let mut expected_dict = ValueRef::dict(None);
         let dict_ref = value.as_dict_ref();
+        expected_dict
+            .set_potential_schema_type(&dict_ref.potential_schema.clone().unwrap_or_default());
         for (k, v) in &dict_ref.values {
             let expected_value = convert_collection_value(ctx, v, &value_tpe);
             let op = dict_ref

@@ -5,28 +5,28 @@ use super::{
     package::{ModuleInfo, PackageDB},
     scope::{ScopeData, ScopeKind, ScopeRef},
     semantic_information::{CachedLocation, CachedRange, FileSemanticInfo, SemanticDB},
-    symbol::{KCLSymbolData, SymbolKind, SymbolRef},
+    symbol::{SymbolData, SymbolKind, SymbolRef},
 };
 
 /// GlobalState is used to store semantic information of KCL source code
 #[derive(Default, Debug, Clone)]
 pub struct GlobalState {
     // store all allocated symbols
-    symbols: KCLSymbolData,
+    symbols: SymbolData,
     // store all allocated scopes
     scopes: ScopeData,
-    // store package infomation for name mapping
+    // store package information for name mapping
     packages: PackageDB,
     // store semantic information after analysis
     pub(crate) sema_db: SemanticDB,
 }
 
 impl GlobalState {
-    pub fn get_symbols(&self) -> &KCLSymbolData {
+    pub fn get_symbols(&self) -> &SymbolData {
         &self.symbols
     }
 
-    pub fn get_symbols_mut(&mut self) -> &mut KCLSymbolData {
+    pub fn get_symbols_mut(&mut self) -> &mut SymbolData {
         &mut self.symbols
     }
 
@@ -45,6 +45,10 @@ impl GlobalState {
     pub fn get_packages_mut(&mut self) -> &mut PackageDB {
         &mut self.packages
     }
+
+    pub fn get_sema_db(&self) -> &SemanticDB {
+        &self.sema_db
+    }
 }
 
 impl GlobalState {
@@ -60,7 +64,9 @@ impl GlobalState {
     ///     the reference of scope which was allocated by [ScopeData]
     ///
     /// `module_info`: [Option<&ModuleInfo>]
-    ///     the module import infomation
+    ///     the module import information
+    /// `local`: [bool]
+    ///     look up in current scope
     ///
     /// # Returns
     ///
@@ -71,12 +77,14 @@ impl GlobalState {
         name: &str,
         scope_ref: ScopeRef,
         module_info: Option<&ModuleInfo>,
+        local: bool,
     ) -> Option<SymbolRef> {
-        match self.scopes.get_scope(scope_ref)?.look_up_def(
+        match self.scopes.get_scope(&scope_ref)?.look_up_def(
             name,
             &self.scopes,
             &self.symbols,
             module_info,
+            local,
         ) {
             None => self
                 .symbols
@@ -103,7 +111,7 @@ impl GlobalState {
     pub fn look_up_scope(&self, pos: &Position) -> Option<ScopeRef> {
         let scopes = &self.scopes;
         for root_ref in scopes.root_map.values() {
-            if let Some(root) = scopes.get_scope(*root_ref) {
+            if let Some(root) = scopes.get_scope(root_ref) {
                 if root.contains_pos(pos) {
                     if let Some(inner_ref) = self.look_up_into_scope(*root_ref, pos) {
                         return Some(inner_ref);
@@ -165,12 +173,13 @@ impl GlobalState {
     ///      all definition symbols in the scope
     pub fn get_all_defs_in_scope(&self, scope: ScopeRef) -> Option<Vec<SymbolRef>> {
         let scopes = &self.scopes;
-        let scope = scopes.get_scope(scope)?;
+        let scope = scopes.get_scope(&scope)?;
         let all_defs: Vec<SymbolRef> = scope
             .get_all_defs(
                 scopes,
                 &self.symbols,
                 self.packages.get_module_info(scope.get_filename()),
+                false,
             )
             .values()
             .into_iter()
@@ -203,7 +212,7 @@ impl GlobalState {
             Some(parent_scope_ref) => {
                 let candidate_symbol = self.symbols.get_symbol(candidate?)?;
                 let (start, _) = candidate_symbol.get_range();
-                let parent_scope = self.scopes.get_scope(parent_scope_ref)?;
+                let parent_scope = self.scopes.get_scope(&parent_scope_ref)?;
                 if parent_scope.contains_pos(&start) {
                     let barrier_scope = self.look_up_closest_sub_scope(parent_scope_ref, pos);
                     match barrier_scope {
@@ -266,7 +275,7 @@ impl GlobalState {
     fn look_up_into_scope(&self, parent: ScopeRef, pos: &Position) -> Option<ScopeRef> {
         let candidate_ref = self.look_up_closest_sub_scope(parent, pos)?;
 
-        let candidate = self.scopes.get_scope(candidate_ref)?;
+        let candidate = self.scopes.get_scope(&candidate_ref)?;
         if candidate.contains_pos(pos) {
             if let Some(inner_ref) = self.look_up_into_scope(candidate_ref, pos) {
                 return Some(inner_ref);
@@ -395,6 +404,67 @@ impl GlobalState {
                 },
             );
         }
+
+        for (index, symbol) in self.symbols.exprs.iter() {
+            let symbol_ref = SymbolRef {
+                kind: SymbolKind::Expression,
+                id: index,
+            };
+            let filename = symbol.start.filename.clone();
+            if !file_sema_map.contains_key(&filename) {
+                file_sema_map.insert(filename.clone(), FileSemanticInfo::new(filename.clone()));
+            }
+            let file_sema_info = file_sema_map.get_mut(&filename).unwrap();
+            file_sema_info.symbols.push(symbol_ref);
+            file_sema_info.symbol_locs.insert(
+                symbol_ref,
+                CachedLocation {
+                    line: symbol.start.line,
+                    column: symbol.start.column.unwrap_or(0),
+                },
+            );
+        }
+
+        for (index, symbol) in self.symbols.comments.iter() {
+            let symbol_ref = SymbolRef {
+                kind: SymbolKind::Comment,
+                id: index,
+            };
+            let filename = symbol.start.filename.clone();
+            if !file_sema_map.contains_key(&filename) {
+                file_sema_map.insert(filename.clone(), FileSemanticInfo::new(filename.clone()));
+            }
+            let file_sema_info = file_sema_map.get_mut(&filename).unwrap();
+            file_sema_info.symbols.push(symbol_ref);
+            file_sema_info.symbol_locs.insert(
+                symbol_ref,
+                CachedLocation {
+                    line: symbol.start.line,
+                    column: symbol.start.column.unwrap_or(0),
+                },
+            );
+        }
+
+        for (index, symbol) in self.symbols.decorators.iter() {
+            let symbol_ref = SymbolRef {
+                kind: SymbolKind::Decorator,
+                id: index,
+            };
+            let filename = symbol.start.filename.clone();
+            if !file_sema_map.contains_key(&filename) {
+                file_sema_map.insert(filename.clone(), FileSemanticInfo::new(filename.clone()));
+            }
+            let file_sema_info = file_sema_map.get_mut(&filename).unwrap();
+            file_sema_info.symbols.push(symbol_ref);
+            file_sema_info.symbol_locs.insert(
+                symbol_ref,
+                CachedLocation {
+                    line: symbol.start.line,
+                    column: symbol.start.column.unwrap_or(0),
+                },
+            );
+        }
+
         // remove dummy file
         file_sema_map.remove("");
 

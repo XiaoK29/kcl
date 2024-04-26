@@ -173,7 +173,11 @@ impl<'ctx> MutSelfMutWalker<'ctx> for RawIdentifierTransformer {
             .collect::<Vec<Node<String>>>();
     }
     fn walk_schema_attr(&mut self, schema_attr: &'ctx mut ast::SchemaAttr) {
-        schema_attr.name.node = remove_raw_ident_prefix(&schema_attr.name.node);
+        // If the attribute is an identifier and then fix it.
+        // Note that we do not fix a string-like attribute e.g., `"$name"`
+        if schema_attr.is_ident_attr() {
+            schema_attr.name.node = remove_raw_ident_prefix(&schema_attr.name.node);
+        }
         walk_list_mut!(self, walk_call_expr, schema_attr.decorators);
         walk_if_mut!(self, walk_expr, schema_attr.value);
     }
@@ -200,11 +204,11 @@ impl<'ctx> MutSelfMutWalker<'ctx> for RawIdentifierTransformer {
         walk_if_mut!(self, walk_identifier, rule_stmt.for_host_name);
     }
     fn walk_import_stmt(&mut self, import_stmt: &'ctx mut ast::ImportStmt) {
-        if let Some(name) = import_stmt.asname.as_mut() {
-            *name = remove_raw_ident_prefix(name);
+        if let Some(name) = &mut import_stmt.asname {
+            name.node = remove_raw_ident_prefix(&name.node);
         }
         import_stmt.name = remove_raw_ident_prefix(&import_stmt.name);
-        import_stmt.path = remove_raw_ident_prefix(&import_stmt.path);
+        import_stmt.path.node = remove_raw_ident_prefix(&import_stmt.path.node);
     }
 }
 
@@ -218,7 +222,7 @@ pub fn fix_qualified_identifier<'ctx>(
     // 0. init import names.
     for stmt in &module.body {
         if let ast::Stmt::Import(import_stmt) = &stmt.node {
-            import_names.insert(import_stmt.name.clone(), import_stmt.path.clone());
+            import_names.insert(import_stmt.name.clone(), import_stmt.path.node.clone());
         }
     }
     // 1. fix_global_ident

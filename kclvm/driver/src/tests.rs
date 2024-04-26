@@ -7,7 +7,8 @@ use kclvm_parser::LoadProgramOptions;
 use walkdir::WalkDir;
 
 use crate::arguments::parse_key_value_pair;
-use crate::kpm_metadata::{fetch_metadata, fill_pkg_maps_for_k_file, lookup_the_nearest_file_dir};
+use crate::kpm::{fetch_metadata, fill_pkg_maps_for_k_file, update_dependencies};
+use crate::lookup_the_nearest_file_dir;
 use crate::{canonicalize_input_files, expand_input_files, get_pkg_list};
 
 #[test]
@@ -42,80 +43,69 @@ fn test_expand_input_files_with_kcl_mod() {
     ];
     let got_paths: Vec<String> = expand_input_files(&input_files)
         .iter()
-        .map(|s| s.replace("/", "").replace("\\", ""))
+        .map(|s| s.replace(['/', '\\'], ""))
         .collect();
     let expect_paths: Vec<String> = expected_files
         .iter()
-        .map(|s| s.replace("/", "").replace("\\", ""))
+        .map(|s| s.replace(['/', '\\'], ""))
         .collect();
     assert_eq!(got_paths, expect_paths);
 }
 
 #[test]
+#[cfg(not(windows))]
 fn test_expand_input_files() {
     let input_files = vec!["./src/test_data/expand_file_pattern/**/main.k".to_string()];
     let mut expected_files = vec![
-        Path::new("./src/test_data/expand_file_pattern/kcl1/kcl2/main.k")
-            .canonicalize()
-            .unwrap()
+        Path::new("src/test_data/expand_file_pattern/kcl1/kcl2/main.k")
             .to_string_lossy()
             .to_string(),
-        Path::new("./src/test_data/expand_file_pattern/kcl3/main.k")
-            .canonicalize()
-            .unwrap()
+        Path::new("src/test_data/expand_file_pattern/kcl3/main.k")
             .to_string_lossy()
             .to_string(),
-        Path::new("./src/test_data/expand_file_pattern/main.k")
-            .canonicalize()
-            .unwrap()
+        Path::new("src/test_data/expand_file_pattern/main.k")
             .to_string_lossy()
             .to_string(),
-        Path::new("./src/test_data/expand_file_pattern/kcl1/kcl4/main.k")
-            .canonicalize()
-            .unwrap()
+        Path::new("src/test_data/expand_file_pattern/kcl1/main.k")
+            .to_string_lossy()
+            .to_string(),
+        Path::new("src/test_data/expand_file_pattern/kcl1/kcl4/main.k")
             .to_string_lossy()
             .to_string(),
     ];
-    assert_eq!(
-        expand_input_files(&input_files).sort(),
-        expected_files.sort()
-    );
+    expected_files.sort();
+    let mut input = expand_input_files(&input_files);
+    input.sort();
+    assert_eq!(input, expected_files);
 
     let input_files = vec![
         "./src/test_data/expand_file_pattern/kcl1/main.k".to_string(),
         "./src/test_data/expand_file_pattern/**/main.k".to_string(),
     ];
     let mut expected_files = vec![
-        Path::new("./src/test_data/expand_file_pattern/kcl1/main.k")
-            .canonicalize()
-            .unwrap()
+        Path::new("src/test_data/expand_file_pattern/kcl1/main.k")
             .to_string_lossy()
             .to_string(),
-        Path::new("./src/test_data/expand_file_pattern/kcl1/kcl2/main.k")
-            .canonicalize()
-            .unwrap()
+        Path::new("src/test_data/expand_file_pattern/kcl1/main.k")
             .to_string_lossy()
             .to_string(),
-        Path::new("./src/test_data/expand_file_pattern/kcl1/kcl4/main.k")
-            .canonicalize()
-            .unwrap()
+        Path::new("src/test_data/expand_file_pattern/kcl1/kcl2/main.k")
             .to_string_lossy()
             .to_string(),
-        Path::new("./src/test_data/expand_file_pattern/kcl3/main.k")
-            .canonicalize()
-            .unwrap()
+        Path::new("src/test_data/expand_file_pattern/kcl1/kcl4/main.k")
             .to_string_lossy()
             .to_string(),
-        Path::new("./src/test_data/expand_file_pattern/main.k")
-            .canonicalize()
-            .unwrap()
+        Path::new("src/test_data/expand_file_pattern/kcl3/main.k")
+            .to_string_lossy()
+            .to_string(),
+        Path::new("src/test_data/expand_file_pattern/main.k")
             .to_string_lossy()
             .to_string(),
     ];
-    assert_eq!(
-        expand_input_files(&input_files).sort(),
-        expected_files.sort()
-    );
+    expected_files.sort();
+    let mut input = expand_input_files(&input_files);
+    input.sort();
+    assert_eq!(input, expected_files);
 }
 
 #[test]
@@ -172,7 +162,7 @@ fn test_parse_key_value_pair() {
         ),
     ];
     for (value, pair) in cases {
-        let result = parse_key_value_pair(&value).unwrap();
+        let result = parse_key_value_pair(value).unwrap();
         assert_eq!(result.key, pair.key);
         assert_eq!(result.value, pair.value);
     }
@@ -195,6 +185,39 @@ fn test_parse_key_value_pair_fail() {
     for case in cases {
         assert!(parse_key_value_pair(case).is_err());
     }
+}
+
+fn test_fill_pkg_maps_for_k_file_with_line() {
+    let root_path = PathBuf::from(".")
+        .join("src")
+        .join("test_data")
+        .join("kpm_metadata_with_line");
+
+    let main_pkg_path = root_path.join("main_pkg").join("main.k");
+    let dep_with_line_path = root_path.join("dep-with-line");
+
+    let mut opts = LoadProgramOptions::default();
+    assert_eq!(format!("{:?}", opts.package_maps), "{}");
+
+    let res = fill_pkg_maps_for_k_file(main_pkg_path.clone(), &mut opts);
+    assert!(res.is_ok());
+
+    let pkg_maps = opts.package_maps.clone();
+    assert_eq!(pkg_maps.len(), 1);
+    assert!(pkg_maps.get("dep_with_line").is_some());
+
+    assert_eq!(
+        PathBuf::from(pkg_maps.get("dep_with_line").unwrap().clone())
+            .canonicalize()
+            .unwrap()
+            .display()
+            .to_string(),
+        dep_with_line_path
+            .canonicalize()
+            .unwrap()
+            .display()
+            .to_string()
+    );
 }
 
 fn test_fill_pkg_maps_for_k_file() {
@@ -249,7 +272,7 @@ fn test_lookup_the_nearest_file_dir() {
         .join("test_data")
         .join("kpm_metadata");
     let result = lookup_the_nearest_file_dir(path.clone(), "kcl.mod");
-    assert_eq!(result.is_some(), true);
+    assert!(result.is_some());
     assert_eq!(
         result.unwrap().display().to_string(),
         path.canonicalize().unwrap().display().to_string()
@@ -257,18 +280,23 @@ fn test_lookup_the_nearest_file_dir() {
 
     let main_path = path.join("subdir").join("main.k");
     let result = lookup_the_nearest_file_dir(main_path, "kcl.mod");
-    assert_eq!(result.is_some(), true);
+    assert!(result.is_some());
     assert_eq!(
         result.unwrap().display().to_string(),
         path.canonicalize().unwrap().display().to_string()
     );
 }
+
 #[test]
 fn test_fetch_metadata_in_order() {
     test_fetch_metadata();
     println!("test_fetch_metadata() passed");
     test_fill_pkg_maps_for_k_file();
     println!("test_fill_pkg_maps_for_k_file() passed");
+    test_fill_pkg_maps_for_k_file_with_line();
+    println!("test_fill_pkg_maps_for_k_file_with_line() passed");
+    test_update_dependencies();
+    println!("test_update_dependencies() passed");
 }
 
 fn test_fetch_metadata() {
@@ -289,13 +317,18 @@ fn test_fetch_metadata() {
     let vendor_home = get_vendor_home();
 
     let metadata = fetch_metadata(path.clone());
-    assert_eq!(metadata.is_err(), false);
+    // Show more information when the test fails.
+    println!("{:?}", metadata);
+    assert!(metadata.is_ok());
     let pkgs = metadata.unwrap().packages.clone();
     assert_eq!(pkgs.len(), 1);
     assert!(pkgs.get("kcl4").is_some());
-    assert_eq!(pkgs.get("kcl4").clone().unwrap().name, "kcl4");
+    assert_eq!(pkgs.get("kcl4").unwrap().name, "kcl4");
     assert_eq!(
-        PathBuf::from(pkgs.get("kcl4").unwrap().manifest_path.clone())
+        pkgs.get("kcl4")
+            .unwrap()
+            .manifest_path
+            .clone()
             .canonicalize()
             .unwrap()
             .display()
@@ -337,4 +370,16 @@ fn test_get_pkg_list() {
         get_pkg_list("./src/test_data/pkg_list/...").unwrap().len(),
         3
     );
+}
+
+fn test_update_dependencies() {
+    let path = PathBuf::from(".")
+        .join("src")
+        .join("test_data")
+        .join("kpm_update");
+
+    let update_mod = update_dependencies(path.clone());
+    // Show more information when the test fails.
+    println!("{:?}", update_mod);
+    assert!(update_mod.is_ok());
 }

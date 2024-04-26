@@ -1,29 +1,41 @@
+#[cfg(feature = "llvm")]
 use crate::assembler::clean_path;
+#[cfg(feature = "llvm")]
 use crate::assembler::KclvmAssembler;
+#[cfg(feature = "llvm")]
 use crate::assembler::KclvmLibAssembler;
+#[cfg(feature = "llvm")]
 use crate::assembler::LibAssembler;
 use crate::exec_program;
+#[cfg(feature = "llvm")]
 use crate::temp_file;
 use crate::{execute, runner::ExecProgramArgs};
+#[cfg(feature = "llvm")]
 use anyhow::Context;
 use anyhow::Result;
 use kclvm_ast::ast::{Module, Program};
-use kclvm_compiler::codegen::llvm::OBJECT_FILE_SUFFIX;
+#[cfg(feature = "llvm")]
+use kclvm_compiler::codegen::OBJECT_FILE_SUFFIX;
 use kclvm_config::settings::load_file;
 use kclvm_parser::load_program;
 use kclvm_parser::ParseSession;
+#[cfg(feature = "llvm")]
 use kclvm_sema::resolver::resolve_program;
+use serde_json::Value;
+#[cfg(feature = "llvm")]
 use std::fs::create_dir_all;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::thread;
 use std::{
     collections::HashMap,
     fs::{self, File},
 };
+#[cfg(feature = "llvm")]
 use tempfile::tempdir;
+use uuid::Uuid;
 use walkdir::WalkDir;
 
+#[cfg(feature = "llvm")]
 const MULTI_FILE_TEST_CASES: &[&str; 5] = &[
     "no_kcl_mod_file",
     "relative_import",
@@ -55,6 +67,7 @@ fn custom_manifests_data_path() -> String {
         .to_string()
 }
 
+#[cfg(feature = "llvm")]
 fn multi_file_test_cases() -> Vec<String> {
     let mut test_cases: Vec<String> = MULTI_FILE_TEST_CASES
         .iter()
@@ -120,6 +133,7 @@ fn test_case_path() -> String {
 
 const KCL_FILE_NAME: &str = "main.k";
 const MAIN_PKG_NAME: &str = "__main__";
+#[cfg(feature = "llvm")]
 const CARGO_PATH: &str = env!("CARGO_MANIFEST_DIR");
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -129,6 +143,7 @@ struct SimplePanicInfo {
     message: String,
 }
 
+#[cfg(feature = "llvm")]
 fn gen_full_path(rel_path: String) -> Result<String> {
     let mut cargo_file_path = PathBuf::from(CARGO_PATH);
     cargo_file_path.push(&rel_path);
@@ -140,10 +155,11 @@ fn gen_full_path(rel_path: String) -> Result<String> {
 
 /// Load test kcl file to ast.Program
 fn load_test_program(filename: String) -> Program {
-    let module = kclvm_parser::parse_file(&filename, None).unwrap();
+    let module = kclvm_parser::parse_file_force_errors(&filename, None).unwrap();
     construct_program(module)
 }
 
+#[cfg(feature = "llvm")]
 fn parse_program(test_kcl_case_path: &str) -> Program {
     let args = ExecProgramArgs::default();
     let opts = args.get_load_program_options();
@@ -154,24 +170,24 @@ fn parse_program(test_kcl_case_path: &str) -> Program {
         None,
     )
     .unwrap()
+    .program
 }
 
 /// Construct ast.Program by ast.Module and default configuration.
 /// Default configuration:
 ///     module.pkg = "__main__"
 ///     Program.root = "__main__"
-///     Program.main = "__main__"
 fn construct_program(mut module: Module) -> Program {
     module.pkg = MAIN_PKG_NAME.to_string();
     let mut pkgs_ast = HashMap::new();
     pkgs_ast.insert(MAIN_PKG_NAME.to_string(), vec![module]);
     Program {
         root: MAIN_PKG_NAME.to_string(),
-        main: MAIN_PKG_NAME.to_string(),
         pkgs: pkgs_ast,
     }
 }
 
+#[cfg(feature = "llvm")]
 fn construct_pkg_lib_path(
     prog: &Program,
     assembler: &KclvmAssembler,
@@ -213,6 +229,7 @@ fn execute_for_test(kcl_path: &String) -> String {
         .json_result
 }
 
+#[cfg(feature = "llvm")]
 fn gen_assembler(entry_file: &str, test_kcl_case_path: &str) -> KclvmAssembler {
     let mut prog = parse_program(test_kcl_case_path);
     let scope = resolve_program(&mut prog);
@@ -225,6 +242,7 @@ fn gen_assembler(entry_file: &str, test_kcl_case_path: &str) -> KclvmAssembler {
     )
 }
 
+#[cfg(feature = "llvm")]
 fn gen_libs_for_test(entry_file: &str, test_kcl_case_path: &str) {
     let assembler = gen_assembler(entry_file, test_kcl_case_path);
 
@@ -235,7 +253,7 @@ fn gen_libs_for_test(entry_file: &str, test_kcl_case_path: &str) {
         OBJECT_FILE_SUFFIX.to_string(),
     );
 
-    let lib_paths = assembler.gen_libs().unwrap();
+    let lib_paths = assembler.gen_libs(&ExecProgramArgs::default()).unwrap();
 
     assert_eq!(lib_paths.len(), expected_pkg_paths.len());
 
@@ -251,6 +269,7 @@ fn gen_libs_for_test(entry_file: &str, test_kcl_case_path: &str) {
     assert_eq!(tmp_main_lib_path.exists(), false);
 }
 
+#[cfg(feature = "llvm")]
 fn assemble_lib_for_test(
     entry_file: &str,
     test_kcl_case_path: &str,
@@ -264,7 +283,9 @@ fn assemble_lib_for_test(
     let opts = args.get_load_program_options();
     let sess = Arc::new(ParseSession::default());
     // parse and resolve kcl
-    let mut program = load_program(sess, &files, Some(opts), None).unwrap();
+    let mut program = load_program(sess, &files, Some(opts), None)
+        .unwrap()
+        .program;
 
     let scope = resolve_program(&mut program);
 
@@ -278,6 +299,7 @@ fn assemble_lib_for_test(
             scope.import_names,
             entry_file,
             temp_entry_file_path,
+            &ExecProgramArgs::default(),
         )
         .unwrap()
 }
@@ -301,6 +323,7 @@ fn test_kclvm_runner_execute() {
 }
 
 #[test]
+#[cfg(feature = "llvm")]
 fn test_assemble_lib_llvm() {
     for case in TEST_CASES {
         let temp_dir = tempdir().unwrap();
@@ -327,6 +350,7 @@ fn test_assemble_lib_llvm() {
 }
 
 #[test]
+#[cfg(feature = "llvm")]
 fn test_gen_libs() {
     for case in multi_file_test_cases() {
         let temp_dir = tempdir().unwrap();
@@ -345,40 +369,8 @@ fn test_gen_libs() {
     }
 }
 
-// Fixme: parallel string/identifier clone panic.
-// #[test]
-fn _test_gen_libs_parallel() {
-    let gen_lib_1 = thread::spawn(|| {
-        for _ in 0..9 {
-            test_gen_libs();
-        }
-    });
-
-    let gen_lib_2 = thread::spawn(|| {
-        for _ in 0..9 {
-            test_gen_libs();
-        }
-    });
-
-    let gen_lib_3 = thread::spawn(|| {
-        for _ in 0..9 {
-            test_gen_libs();
-        }
-    });
-
-    let gen_lib_4 = thread::spawn(|| {
-        for _ in 0..9 {
-            test_gen_libs();
-        }
-    });
-
-    gen_lib_1.join().unwrap();
-    gen_lib_2.join().unwrap();
-    gen_lib_3.join().unwrap();
-    gen_lib_4.join().unwrap();
-}
-
 #[test]
+#[cfg(feature = "llvm")]
 fn test_clean_path_for_genlibs() {
     let mut prog = parse_program(
         &Path::new(".")
@@ -500,33 +492,7 @@ fn test_exec_with_err_result() {
 }
 
 fn clean_dir(path: String) {
-    match fs::remove_dir_all(path) {
-        Ok(_) => {}
-        Err(_) => {}
-    }
-}
-
-fn test_compile_dir_recursive() {
-    let path = PathBuf::from("./src/test_datas/compile_recursive")
-        .canonicalize()
-        .unwrap();
-    let mut args = ExecProgramArgs::default();
-    args.k_filename_list.push(path.display().to_string());
-    let mut opts: kclvm_parser::LoadProgramOptions = args.get_load_program_options();
-    opts.recursive = true;
-    let sess = Arc::new(ParseSession::default());
-    // Load AST program
-    let program = load_program(
-        sess.clone(),
-        &[&path.display().to_string()],
-        Some(opts),
-        None,
-    )
-    .unwrap();
-    // Resolve ATS, generate libs, link libs and execute.
-    let res = execute(sess, program, &args);
-    assert!(res.is_ok());
-    assert_eq!(res.unwrap().json_result, "{\"k1\": \"Hello k1!\", \"k2\": \"Hello k2!\", \"The_first_kcl_program\": \"Hello World!\"}");
+    if let Ok(_) = fs::remove_dir_all(path) {}
 }
 
 #[test]
@@ -561,14 +527,14 @@ fn test_exec() {
     test_exec_with_err_result();
     println!("test_exec_with_err_result - PASS");
 
-    test_compile_dir_recursive();
-    println!("test_compile_dir_recursive - PASS");
-
     test_indent_error();
     println!("test_indent_error - PASS");
 
     test_compile_with_file_pattern();
     println!("test_compile_with_file_pattern - PASS");
+
+    test_uuid();
+    println!("test_uuid - PASS");
 }
 
 fn test_indent_error() {
@@ -594,7 +560,9 @@ fn exec(file: &str) -> Result<String, String> {
     let opts = args.get_load_program_options();
     let sess = Arc::new(ParseSession::default());
     // Load AST program
-    let program = load_program(sess.clone(), &[file], Some(opts), None).unwrap();
+    let program = load_program(sess.clone(), &[file], Some(opts), None)
+        .unwrap()
+        .program;
     // Resolve ATS, generate libs, link libs and execute.
     match execute(sess, program, &args) {
         Ok(result) => {
@@ -631,7 +599,11 @@ fn exec_with_result_at(path: &str) {
         #[cfg(target_os = "windows")]
         let expected = expected.replace("\r\n", "\n");
 
-        assert_eq!(result.yaml_result, expected);
+        assert_eq!(
+            result.yaml_result, expected,
+            "test case {} {} failed",
+            path, kcl_file
+        );
     }
 }
 
@@ -694,6 +666,25 @@ fn test_compile_with_file_pattern() {
     );
     assert_eq!(
         res.as_ref().unwrap().json_result,
-        "[{\"k3\": \"Hello World!\", \"k1\": \"Hello World!\", \"k2\": \"Hello World!\"}]"
+        "{\"k3\": \"Hello World!\", \"k1\": \"Hello World!\", \"k2\": \"Hello World!\"}"
     );
+}
+
+fn test_uuid() {
+    let res = exec(
+        &PathBuf::from(".")
+            .join("src")
+            .join("test_uuid")
+            .join("main.k")
+            .canonicalize()
+            .unwrap()
+            .display()
+            .to_string(),
+    );
+
+    let v: Value = serde_json::from_str(res.clone().unwrap().as_str()).unwrap();
+    assert!(v["a"].as_str().is_some());
+    if let Some(uuid_str) = v["a"].as_str() {
+        assert!(Uuid::parse_str(uuid_str).is_ok());
+    }
 }

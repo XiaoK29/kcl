@@ -6,8 +6,10 @@ use serde::de::DeserializeOwned;
 use std::default::Default;
 use std::ffi::{CStr, CString};
 use std::fs;
+use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+
 const TEST_DATA_PATH: &str = "./src/testdata";
 static TEST_MUTEX: Lazy<Mutex<i32>> = Lazy::new(|| Mutex::new(0i32));
 
@@ -63,11 +65,33 @@ fn test_c_api_call_exec_program_with_print() {
 
 #[test]
 fn test_c_api_call_override_file() {
-    test_c_api_without_wrapper::<OverrideFileArgs, OverrideFileResult>(
-        "KclvmService.OverrideFile",
-        "override-file.json",
-        "override-file.response.json",
-    );
+    let test_cases = [
+        ("override-file.json", "override-file.response.json"),
+        (
+            "override-file-dict.json",
+            "override-file-dict.response.json",
+        ),
+        (
+            "override-file-dict_0.json",
+            "override-file-dict_0.response.json",
+        ),
+        (
+            "override-file-list.json",
+            "override-file-list.response.json",
+        ),
+        (
+            "override-file-bool.json",
+            "override-file-bool.response.json",
+        ),
+    ];
+
+    for (input, output) in &test_cases {
+        test_c_api_without_wrapper::<OverrideFileArgs, OverrideFileResult>(
+            "KclvmService.OverrideFile",
+            input,
+            output,
+        );
+    }
 }
 
 #[test]
@@ -78,7 +102,7 @@ fn test_c_api_get_full_schema_type() {
         "get-full-schema-type.response.json",
         |r| {
             for s_ty in &mut r.schema_type_list {
-                s_ty.filename = s_ty.filename.replace("/", "").replace("\\", "")
+                s_ty.filename = s_ty.filename.replace('/', "").replace('\\', "")
             }
         },
     );
@@ -92,7 +116,7 @@ fn test_c_api_get_all_full_schema_types() {
         "get-all-full-schema-types.response.json",
         |r| {
             for s_ty in &mut r.schema_type_list {
-                s_ty.filename = s_ty.filename.replace("/", "").replace("\\", "")
+                s_ty.filename = s_ty.filename.replace('/', "").replace('\\', "")
             }
         },
     );
@@ -144,21 +168,20 @@ fn test_c_api_call_exec_program_with_compile_only() {
 }
 
 #[test]
-fn test_c_api_call_exec_program_with_recursive() {
-    test_c_api::<ExecProgramArgs, ExecProgramResult, _>(
-        "KclvmService.ExecProgram",
-        "exec-program-with-recursive.json",
-        "exec-program-with-recursive.response.json",
-        |_| {},
-    );
-}
-
-#[test]
 fn test_c_api_validate_code() {
     test_c_api_without_wrapper::<ValidateCodeArgs, ValidateCodeResult>(
         "KclvmService.ValidateCode",
         "validate-code.json",
         "validate-code.response.json",
+    );
+}
+
+#[test]
+fn test_c_api_validate_code_file() {
+    test_c_api_without_wrapper::<ValidateCodeArgs, ValidateCodeResult>(
+        "KclvmService.ValidateCode",
+        "validate-code-file.json",
+        "validate-code-file.response.json",
     );
 }
 
@@ -212,6 +235,33 @@ fn test_c_api_rename_code() {
 }
 
 #[test]
+fn test_c_api_list_options() {
+    test_c_api_without_wrapper::<ParseProgramArgs, ListOptionsResult>(
+        "KclvmService.ListOptions",
+        "list-options.json",
+        "list-options.response.json",
+    );
+}
+
+#[test]
+fn test_c_api_list_variables() {
+    test_c_api_without_wrapper::<ListVariablesArgs, ListVariablesResult>(
+        "KclvmService.ListVariables",
+        "list-variables.json",
+        "list-variables.response.json",
+    );
+}
+
+#[test]
+fn test_c_api_parse_file() {
+    test_c_api_without_wrapper::<ParseFileArgs, ParseFileResult>(
+        "KclvmService.ParseFile",
+        "parse-file.json",
+        "parse-file.response.json",
+    );
+}
+
+#[test]
 fn test_c_api_testing() {
     test_c_api::<TestArgs, TestResult, _>(
         "KclvmService.Test",
@@ -249,10 +299,18 @@ where
         CString::from_vec_unchecked(serde_json::from_str::<A>(&input).unwrap().encode_to_vec())
     };
     let call = CString::new(svc_name).unwrap();
-    let result_ptr = kclvm_service_call(serv, call.as_ptr(), args.as_ptr()) as *mut i8;
-    let result = unsafe { CStr::from_ptr(result_ptr) };
+    let mut result_len: usize = 0;
+    let src_ptr =
+        kclvm_service_call_with_length(serv, call.as_ptr(), args.as_ptr(), &mut result_len);
 
-    let mut result = R::decode(result.to_bytes()).unwrap();
+    let mut dest_data: Vec<u8> = Vec::with_capacity(result_len);
+    unsafe {
+        let dest_ptr: *mut u8 = dest_data.as_mut_ptr();
+        std::ptr::copy_nonoverlapping(src_ptr as *const u8, dest_ptr, result_len);
+        dest_data.set_len(result_len);
+    }
+
+    let mut result = R::decode(dest_data.as_slice()).unwrap();
     let result_json = serde_json::to_string(&result).unwrap();
 
     let except_result_path = Path::new(TEST_DATA_PATH).join(output);
@@ -268,7 +326,7 @@ where
     assert_eq!(result, except_result, "\nresult json is {result_json}");
     unsafe {
         kclvm_service_delete(serv);
-        kclvm_service_free_string(result_ptr);
+        kclvm_service_free_string(src_ptr as *mut c_char);
     }
 }
 
@@ -289,9 +347,8 @@ where
     let prev_hook = std::panic::take_hook();
     // disable print panic info
     std::panic::set_hook(Box::new(|_info| {}));
-    let result = std::panic::catch_unwind(|| {
-        kclvm_service_call(serv, call.as_ptr(), args.as_ptr()) as *mut i8
-    });
+    let result =
+        std::panic::catch_unwind(|| kclvm_service_call(serv, call.as_ptr(), args.as_ptr()));
     std::panic::set_hook(prev_hook);
     match result {
         Ok(result_ptr) => {
@@ -307,7 +364,7 @@ where
             assert!(result.to_string_lossy().contains(&except_result_panic_msg));
             unsafe {
                 kclvm_service_delete(serv);
-                kclvm_service_free_string(result_ptr);
+                kclvm_service_free_string(result_ptr as *mut c_char);
             }
         }
         Err(_) => {

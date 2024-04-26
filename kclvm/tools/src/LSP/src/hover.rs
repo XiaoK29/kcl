@@ -1,6 +1,7 @@
 use kclvm_ast::ast::Program;
 use kclvm_error::Position as KCLPos;
 use kclvm_sema::{
+    builtin::BUILTIN_DECORATORS,
     core::global_state::GlobalState,
     ty::{FunctionType, SchemaType},
 };
@@ -51,6 +52,19 @@ pub(crate) fn hover(
                     },
                     _ => {}
                 },
+                kclvm_sema::core::symbol::SymbolKind::Expression => return None,
+                kclvm_sema::core::symbol::SymbolKind::Comment => return None,
+                kclvm_sema::core::symbol::SymbolKind::Decorator => {
+                    match BUILTIN_DECORATORS.get(&obj.get_name()) {
+                        Some(ty) => {
+                            docs.extend(build_func_hover_content(
+                                &ty.into_func_type(),
+                                obj.get_name().clone(),
+                            ));
+                        }
+                        None => todo!(),
+                    }
+                }
                 _ => {
                     let ty_str = match &obj.get_sema_info().ty {
                         Some(ty) => ty.ty_str(),
@@ -107,10 +121,10 @@ fn build_schema_hover_content(schema_ty: &SchemaType) -> Vec<String> {
     let mut attrs = vec!["Attributes:".to_string()];
     for (name, attr) in &schema_ty.attrs {
         attrs.push(format!(
-            "{}{}:{}",
+            "{}{}: {}",
             name,
             if attr.is_optional { "?" } else { "" },
-            format!(" {}", attr.ty.ty_str()),
+            attr.ty.ty_str(),
         ));
     }
     docs.push(attrs.join("\n\n"));
@@ -171,7 +185,7 @@ mod tests {
     fn schema_doc_hover_test() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
-        let (file, program, _, _, gs) = compile_test_file("src/test_data/goto_def_test/goto_def.k");
+        let (file, program, _, gs) = compile_test_file("src/test_data/goto_def_test/goto_def.k");
 
         let mut expected_path = path;
         expected_path.push("src/test_data/goto_def_test/pkg/schema_def.k");
@@ -216,7 +230,7 @@ mod tests {
     #[test]
     #[bench_test]
     fn schema_doc_hover_test1() {
-        let (file, program, _, _, gs) = compile_test_file("src/test_data/hover_test/hover.k");
+        let (file, program, _, gs) = compile_test_file("src/test_data/hover_test/hover.k");
 
         let pos = KCLPos {
             filename: file.clone(),
@@ -244,7 +258,7 @@ mod tests {
     #[test]
     #[bench_test]
     fn schema_attr_hover_test() {
-        let (file, program, _, _, gs) = compile_test_file("src/test_data/hover_test/hover.k");
+        let (file, program, _, gs) = compile_test_file("src/test_data/hover_test/hover.k");
 
         let pos = KCLPos {
             filename: file.clone(),
@@ -288,7 +302,7 @@ mod tests {
     #[test]
     #[bench_test]
     fn func_def_hover() {
-        let (file, program, _, _, gs) = compile_test_file("src/test_data/hover_test/hover.k");
+        let (file, program, _, gs) = compile_test_file("src/test_data/hover_test/hover.k");
 
         let pos = KCLPos {
             filename: file.clone(),
@@ -350,7 +364,7 @@ mod tests {
                     assert_eq!(s, "fn print() -> NoneType");
                 }
                 if let MarkedString::String(s) = vec[1].clone() {
-                    assert_eq!(s, "Prints the values to a stream, or to sys.stdout by default.\n\n        Optional keyword arguments:\n\n        sep:   string inserted between values, default a space.\n\n        end:   string appended after the last value, default a newline.");
+                    assert_eq!(s, "Prints the values to a stream, or to the system stdout by default.\n\nOptional keyword arguments:\n\nsep:   string inserted between values, default a space.\n\nend:   string appended after the last value, default a newline.");
                 }
             }
             _ => unreachable!("test error"),
@@ -360,7 +374,7 @@ mod tests {
     #[test]
     #[bench_test]
     fn complex_select_hover() {
-        let (file, program, _, _, gs) = compile_test_file("src/test_data/hover_test/fib.k");
+        let (file, program, _, gs) = compile_test_file("src/test_data/hover_test/fib.k");
         let pos = KCLPos {
             filename: file.clone(),
             line: 14,
@@ -380,8 +394,7 @@ mod tests {
     #[test]
     #[bench_test]
     fn assignment_ty_in_lambda_hover() {
-        let (file, program, _, _, gs) =
-            compile_test_file("src/test_data/hover_test/ty_in_lambda.k");
+        let (file, program, _, gs) = compile_test_file("src/test_data/hover_test/ty_in_lambda.k");
         let pos = KCLPos {
             filename: file.clone(),
             line: 3,
@@ -401,7 +414,7 @@ mod tests {
     #[test]
     #[bench_test]
     fn str_var_func_hover() {
-        let (file, program, _, _, gs) = compile_test_file("src/test_data/hover_test/hover.k");
+        let (file, program, _, gs) = compile_test_file("src/test_data/hover_test/hover.k");
         let pos = KCLPos {
             filename: file.clone(),
             line: 28,
@@ -420,6 +433,106 @@ mod tests {
                 if let MarkedString::String(s) = vec[2].clone() {
                     assert_eq!(s, "Return a copy of the string with its first character capitalized and the rest lowercased.");
                 }
+            }
+            _ => unreachable!("test error"),
+        }
+    }
+
+    #[test]
+    #[bench_test]
+    fn import_pkg_hover() {
+        let (file, program, _, gs) = compile_test_file("src/test_data/hover_test/import_pkg.k");
+        let pos = KCLPos {
+            filename: file.clone(),
+            line: 3,
+            column: Some(7),
+        };
+        let got = hover(&program, &pos, &gs).unwrap();
+        match got.contents {
+            lsp_types::HoverContents::Array(vec) => {
+                assert_eq!(vec.len(), 2);
+                if let MarkedString::String(s) = vec[0].clone() {
+                    assert_eq!(s, "fib\n\nschema Fib");
+                }
+                if let MarkedString::String(s) = vec[1].clone() {
+                    assert_eq!(s, "Attributes:\n\nn: int\n\nvalue: int");
+                }
+            }
+            _ => unreachable!("test error"),
+        }
+    }
+
+    #[test]
+    #[bench_test]
+    fn expr_after_config_if_hover() {
+        let (file, program, _, gs) = compile_test_file("src/test_data/hover_test/hover.k");
+        let pos = KCLPos {
+            filename: file.clone(),
+            line: 41,
+            column: Some(13),
+        };
+        let got = hover(&program, &pos, &gs).unwrap();
+        match got.contents {
+            lsp_types::HoverContents::Scalar(marked_string) => {
+                if let MarkedString::String(s) = marked_string {
+                    assert_eq!(s, "stratege: str");
+                }
+            }
+            _ => unreachable!("test error"),
+        }
+    }
+
+    #[test]
+    #[bench_test]
+    fn schema_scope_variable_hover() {
+        let (file, program, _, gs) = compile_test_file("src/test_data/hover_test/fib.k");
+        let pos = KCLPos {
+            filename: file.clone(),
+            line: 3,
+            column: Some(11),
+        };
+        let got = hover(&program, &pos, &gs).unwrap();
+        match got.contents {
+            lsp_types::HoverContents::Scalar(marked_string) => {
+                if let MarkedString::String(s) = marked_string {
+                    assert_eq!(s, "n1: int");
+                }
+            }
+            _ => unreachable!("test error"),
+        }
+    }
+
+    #[test]
+    #[bench_test]
+    fn decorator_hover() {
+        let (file, program, _, gs) = compile_test_file("src/test_data/hover_test/decorator.k");
+        let pos = KCLPos {
+            filename: file.clone(),
+            line: 1,
+            column: Some(1),
+        };
+        let got = hover(&program, &pos, &gs).unwrap();
+        let expect_content = vec![MarkedString::String(
+            "fn deprecated(version: str, reason: str, strict: bool) -> any".to_string(),
+        ), MarkedString::String(
+            "This decorator is used to get the deprecation message according to the wrapped key-value pair.".to_string(),
+        )];
+        match got.contents {
+            lsp_types::HoverContents::Array(vec) => {
+                assert_eq!(vec, expect_content)
+            }
+            _ => unreachable!("test error"),
+        }
+
+        let pos = KCLPos {
+            filename: file.clone(),
+            line: 3,
+            column: Some(8),
+        };
+        let got = hover(&program, &pos, &gs).unwrap();
+        match got.contents {
+            lsp_types::HoverContents::Array(vec) => {
+                assert_eq!(vec, expect_content);
             }
             _ => unreachable!("test error"),
         }

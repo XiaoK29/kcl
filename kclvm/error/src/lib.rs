@@ -126,13 +126,22 @@ impl Handler {
 
     /// Construct a type error and put it into the handler diagnostic buffer
     pub fn add_compile_error(&mut self, msg: &str, range: Range) -> &mut Self {
+        self.add_compile_error_with_suggestions(msg, range, None)
+    }
+
+    pub fn add_compile_error_with_suggestions(
+        &mut self,
+        msg: &str,
+        range: Range,
+        suggestions: Option<Vec<String>>,
+    ) -> &mut Self {
         let diag = Diagnostic::new_with_code(
             Level::Error,
             msg,
             None,
             range,
             Some(DiagnosticId::Error(E2L23.kind)),
-            None,
+            suggestions,
         );
         self.add_diagnostic(diag);
 
@@ -156,7 +165,7 @@ impl Handler {
     ///         style: Style::LineAndColumn,
     ///         message: "Invalid syntax: expected '+', got '-'".to_string(),
     ///         note: None,
-    ///         suggested_replacement: Some("".to_string()),
+    ///         suggested_replacement: None,
     ///     }
     /// ]);
     /// ```
@@ -199,7 +208,7 @@ impl Handler {
     ///         style: Style::LineAndColumn,
     ///         message: "Module 'a' imported but unused.".to_string(),
     ///         note: None,
-    ///         suggested_replacement: Some("".to_string()),
+    ///         suggested_replacement: None,
     ///     }],
     /// );
     /// ```
@@ -262,7 +271,7 @@ impl From<PanicInfo> for Diagnostic {
             };
             Diagnostic::new_with_code(
                 Level::Error,
-                &panic_msg,
+                panic_msg,
                 None,
                 (pos.clone(), pos),
                 None,
@@ -280,7 +289,7 @@ impl From<PanicInfo> for Diagnostic {
                 if frame.col != 0 {
                     backtrace_msg.push_str(&format!(":{}", frame.col))
                 }
-                backtrace_msg.push_str("\n")
+                backtrace_msg.push('\n')
             }
             let pos = Position {
                 filename: panic_info.kcl_file.clone(),
@@ -289,7 +298,7 @@ impl From<PanicInfo> for Diagnostic {
             };
             Diagnostic::new_with_code(
                 Level::Error,
-                &panic_msg,
+                panic_msg,
                 Some(&backtrace_msg),
                 (pos.clone(), pos),
                 None,
@@ -429,7 +438,7 @@ impl SessionDiagnostic for Diagnostic {
                     diag.append_component(Box::new(format!(": {}\n", warning.name())));
                 }
                 DiagnosticId::Suggestions => {
-                    diag.append_component(Box::new(SuggestionsLabel::default()));
+                    diag.append_component(Box::new(SuggestionsLabel));
                 }
             },
             None => match self.level {
@@ -443,7 +452,7 @@ impl SessionDiagnostic for Diagnostic {
                     diag.append_component(Box::new(Label::Note));
                 }
                 Level::Suggestions => {
-                    diag.append_component(Box::new(SuggestionsLabel::default()));
+                    diag.append_component(Box::new(SuggestionsLabel));
                 }
             },
         }

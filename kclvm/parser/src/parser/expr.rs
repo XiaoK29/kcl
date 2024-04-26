@@ -11,7 +11,7 @@ use either::{self, Either};
 use kclvm_ast::node_ref;
 
 use crate::parser::precedence::Precedence;
-use compiler_base_error_dev::unit_type::{TypeWithUnit, UnitUsize};
+use compiler_base_error::unit_type::{TypeWithUnit, UnitUsize};
 use kclvm_ast::ast::*;
 use kclvm_ast::token;
 use kclvm_ast::token::{BinOpToken, DelimToken, TokenKind, VALID_SPACES_LENGTH};
@@ -87,10 +87,9 @@ impl<'a> Parser<'a> {
     /// test: if_expr | simple_expr
     pub(crate) fn parse_expr(&mut self) -> NodeRef<Expr> {
         if self.token.is_in_recovery_set() {
-            self.sess.struct_span_error(
-                &format!("unexpected '{:?}'", self.token.kind),
-                self.token.span,
-            );
+            let tok: String = self.token.into();
+            self.sess
+                .struct_span_error(&format!("unexpected token '{}'", tok), self.token.span);
             self.bump();
         }
 
@@ -210,33 +209,37 @@ impl<'a> Parser<'a> {
 
             let y = self.do_parse_simple_expr(oprec);
 
-            // compare: a == b == c
-            if let BinOrCmpOp::Cmp(cmp_op) = op.clone() {
-                if cmp_expr.ops.is_empty() {
-                    cmp_expr.left = x.clone();
+            match op {
+                // compare: a == b == c
+                BinOrCmpOp::Cmp(cmp_op) => {
+                    if cmp_expr.ops.is_empty() {
+                        cmp_expr.left = x.clone();
+                    }
+                    cmp_expr.ops.push(cmp_op);
+                    cmp_expr.comparators.push(y);
+                    continue;
                 }
-                cmp_expr.ops.push(cmp_op);
-                cmp_expr.comparators.push(y);
-                continue;
-            }
+                // binary a + b
+                BinOrCmpOp::Bin(bin_op) => {
+                    if !cmp_expr.ops.is_empty() {
+                        x = Box::new(Node::node(
+                            Expr::Compare(cmp_expr.clone()),
+                            self.sess.struct_token_loc(token, self.prev_token),
+                        ));
+                        cmp_expr.ops = Vec::new();
+                        cmp_expr.comparators = Vec::new();
+                    }
 
-            if !cmp_expr.ops.is_empty() {
-                x = Box::new(Node::node(
-                    Expr::Compare(cmp_expr.clone()),
-                    self.sess.struct_token_loc(token, self.prev_token),
-                ));
-                cmp_expr.ops = Vec::new();
-                cmp_expr.comparators = Vec::new();
+                    x = Box::new(Node::node(
+                        Expr::Binary(BinaryExpr {
+                            left: x,
+                            op: bin_op,
+                            right: y,
+                        }),
+                        self.sess.struct_token_loc(token, self.prev_token),
+                    ));
+                }
             }
-
-            x = Box::new(Node::node(
-                Expr::Binary(BinaryExpr {
-                    left: x,
-                    op,
-                    right: y,
-                }),
-                self.sess.struct_token_loc(token, self.prev_token),
-            ));
         }
     }
 
@@ -1559,6 +1562,7 @@ impl<'a> Parser<'a> {
         // elif ...
         let mut need_skip_newlines = false;
         let mut elif_list = Vec::new();
+        let mut last_token = self.token;
         loop {
             if !self.token.is_keyword(kw::Elif) {
                 break;
@@ -1585,6 +1589,7 @@ impl<'a> Parser<'a> {
                 x,
                 self.sess.struct_token_loc(token, self.prev_token),
             )));
+            last_token = self.prev_token;
         }
 
         if let TokenKind::Newline = self.token.kind {
@@ -1614,6 +1619,7 @@ impl<'a> Parser<'a> {
                 Expr::Config(orelse),
                 self.sess.struct_token_loc(token, self.prev_token),
             ));
+            last_token = self.prev_token;
 
             if_entry.node.orelse = Some(t);
         }
@@ -1644,7 +1650,7 @@ impl<'a> Parser<'a> {
 
         Box::new(Node::node(
             Expr::ConfigIfEntry(if_entry.node),
-            self.sess.struct_token_loc(token, self.prev_token),
+            self.sess.struct_token_loc(token, last_token),
         ))
     }
 
@@ -1912,7 +1918,6 @@ impl<'a> Parser<'a> {
         self.bump_keyword(kw::Lambda);
 
         let mut args = None;
-        let mut return_type_str = None;
         let mut return_ty = None;
 
         // schema_arguments
@@ -1928,7 +1933,6 @@ impl<'a> Parser<'a> {
         if let TokenKind::RArrow = self.token.kind {
             self.bump_token(TokenKind::RArrow);
             let typ = self.parse_type_annotation();
-            return_type_str = Some(typ.node.to_string());
             return_ty = Some(typ);
         }
 
@@ -1974,7 +1978,6 @@ impl<'a> Parser<'a> {
         Box::new(Node::node(
             Expr::Lambda(LambdaExpr {
                 args,
-                return_type_str,
                 return_ty,
                 body: stmt_list,
             }),
